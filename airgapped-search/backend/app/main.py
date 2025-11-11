@@ -54,10 +54,7 @@ async def health():
     return {"status": "healthy"}
 
 
-# Import and include routers (will be added later)
-# from app.api.endpoints import documents, search, auth, users, organizations
-# app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
-# app.include_router(users.router, prefix="/api/users", tags=["users"])
-# app.include_router(organizations.router, prefix="/api/organizations", tags=["organizations"])
-# app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
-# app.include_router(search.router, prefix="/api/search", tags=["search"])
+# Import and include API router
+from app.api import api_router
+
+app.include_router(api_router, prefix="/api")
