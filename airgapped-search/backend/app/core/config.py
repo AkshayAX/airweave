@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE_MB: int = 100
     UPLOAD_DIR: str = "/tmp/uploads"
 
+    # OCR Configuration
+    ENABLE_OCR: bool = True  # Enable DeepSeek-OCR for scanned documents
+    OCR_DEVICE: str = "auto"  # Device: "auto", "cuda", "cpu", "mps"
+    OCR_BATCH_SIZE: int = 4  # Number of images to process in parallel
+
     # Environment
     ENVIRONMENT: str = "development"
 

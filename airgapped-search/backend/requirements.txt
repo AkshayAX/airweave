@@ -27,8 +27,13 @@ html-to-markdown>=2.4.1
 chonkie>=1.4.0
 markitdown>=0.0.1a3
 
-# Image Processing (optional, for future OCR)
+# OCR & Image Processing (DeepSeek-OCR for scanned documents)
+transformers>=4.40.0
+torch>=2.0.0
+pdf2image>=1.16.0  # PDF to image conversion
 pillow>=11.0.0
+# Note: For GPU support, ensure CUDA toolkit is installed on your system
+# PyTorch will automatically use CUDA if available
 
 # Utilities
 aiofiles>=24.1.0
