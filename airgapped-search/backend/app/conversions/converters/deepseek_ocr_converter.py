@@ -268,36 +268,38 @@ class DeepSeekOCRConverter(BaseTextConverter):
                     tmp_path = tmp_file.name
                     image.save(tmp_path, format='PNG')
 
-                try:
-                    # Use DeepSeek-OCR's custom infer() method
-                    # Prompt for pure OCR without layout grounding
-                    prompt = "<image>\n<|grounding|>OCR this image."
+                # Create temporary output directory for model's internal use
+                with tempfile.TemporaryDirectory() as tmp_output_dir:
+                    try:
+                        # Use DeepSeek-OCR's custom infer() method
+                        # Prompt for pure OCR without layout grounding
+                        prompt = "<image>\n<|grounding|>OCR this image."
 
-                    # Call model's custom infer method
-                    result = self._model.infer(
-                        self._tokenizer,
-                        prompt=prompt,
-                        image_file=tmp_path,
-                        output_path=None,  # We don't need to save output files
-                        base_size=1024,    # Standard base size
-                        image_size=640,    # Standard image size
-                        crop_mode=True,    # Use crop mode for better results
-                        save_results=False, # Don't save intermediate files
-                        test_compress=False  # No compression testing needed
-                    )
+                        # Call model's custom infer method
+                        result = self._model.infer(
+                            self._tokenizer,
+                            prompt=prompt,
+                            image_file=tmp_path,
+                            output_path=tmp_output_dir,  # Temporary directory for model's internal files
+                            base_size=1024,    # Standard base size
+                            image_size=640,    # Standard image size
+                            crop_mode=True,    # Use crop mode for better results
+                            save_results=False, # Don't save intermediate files
+                            test_compress=False  # No compression testing needed
+                        )
 
-                    # Extract text from result
-                    # The infer method returns text output
-                    if result and isinstance(result, str):
-                        return result.strip() if result.strip() else None
-                    else:
-                        logger.warning(f"Unexpected result type from infer(): {type(result)}")
-                        return None
+                        # Extract text from result
+                        # The infer method returns text output
+                        if result and isinstance(result, str):
+                            return result.strip() if result.strip() else None
+                        else:
+                            logger.warning(f"Unexpected result type from infer(): {type(result)}")
+                            return None
 
-                finally:
-                    # Clean up temp file
-                    if os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
+                    finally:
+                        # Clean up temp image file
+                        if os.path.exists(tmp_path):
+                            os.unlink(tmp_path)
 
             except Exception as e:
                 logger.error(f"OCR inference failed for {name}: {e}", exc_info=True)
