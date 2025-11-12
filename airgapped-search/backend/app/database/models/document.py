@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, List
 from uuid import UUID
 
 from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text
+from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, utc_now
@@ -41,6 +42,21 @@ class Document(Base):
         nullable=False
     )  # pending, processing, completed, failed
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Access Control
+    access_type: Mapped[str] = mapped_column(
+        String,
+        default="private",
+        nullable=False
+    )  # private, domain, public
+    owner_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True
+    )  # For private documents (emails)
+    access_domains: Mapped[list | None] = mapped_column(
+        JSON,
+        nullable=True
+    )  # ["finance", "legal", "engineering"] for domain-based access
 
     # Relationships
     chunks: Mapped[List["Chunk"]] = relationship(

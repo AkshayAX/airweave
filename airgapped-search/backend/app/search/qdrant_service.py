@@ -15,6 +15,7 @@ from qdrant_client.models import (
     Filter,
     FieldCondition,
     MatchValue,
+    MatchAny,
     SearchRequest,
 )
 
@@ -106,6 +107,8 @@ class QdrantService:
         limit: int = 10,
         score_threshold: Optional[float] = None,
         document_filter: Optional[UUID] = None,
+        user_id: Optional[UUID] = None,
+        user_domains: Optional[List[str]] = None,
     ) -> List[Dict]:
         """Search for similar vectors in the collection.
 
@@ -114,27 +117,76 @@ class QdrantService:
             limit: Maximum number of results
             score_threshold: Minimum similarity score (0.0 to 1.0)
             document_filter: Optional document UUID to filter by
+            user_id: User ID for access control filtering
+            user_domains: List of domains user has access to
 
         Returns:
             List of search results with scores and payloads
         """
         collection_name = self.COLLECTION_NAME
 
-        # Build filter if document_filter is provided
-        query_filter = None
+        # Build access control filter
+        filter_conditions = []
+
+        # Add document ID filter if provided
         if document_filter:
-            query_filter = Filter(
-                must=[
-                    FieldCondition(
-                        key="document_id",
-                        match=MatchValue(value=str(document_filter)),
-                    )
-                ]
+            filter_conditions.append(
+                FieldCondition(
+                    key="document_id",
+                    match=MatchValue(value=str(document_filter)),
+                )
             )
+
+        # Build access control filter (OR conditions)
+        access_conditions = []
+
+        # 1. Public documents - everyone can access
+        access_conditions.append(
+            FieldCondition(
+                key="access_type",
+                match=MatchValue(value="public"),
+            )
+        )
+
+        # 2. Private documents - only owner
+        if user_id:
+            access_conditions.append(
+                FieldCondition(
+                    key="owner_id",
+                    match=MatchValue(value=str(user_id)),
+                )
+            )
+
+        # 3. Domain-based access - check if user's domains match document's domains
+        if user_domains:
+            for domain in user_domains:
+                access_conditions.append(
+                    FieldCondition(
+                        key="access_domains",
+                        match=MatchAny(any=[domain]),
+                    )
+                )
+
+        # Combine filters
+        query_filter = None
+        if access_conditions:
+            if filter_conditions:
+                # Both document filter AND access control
+                query_filter = Filter(
+                    must=filter_conditions,
+                    should=access_conditions,  # OR for access conditions
+                )
+            else:
+                # Only access control
+                query_filter = Filter(should=access_conditions)
+        elif filter_conditions:
+            # Only document filter
+            query_filter = Filter(must=filter_conditions)
 
         logger.debug(
             f"Searching {collection_name}: limit={limit}, "
-            f"threshold={score_threshold}, filter={document_filter}"
+            f"threshold={score_threshold}, document_filter={document_filter}, "
+            f"user_id={user_id}, user_domains={user_domains}"
         )
 
         # Perform search

@@ -132,14 +132,18 @@ class VectorStore:
         limit: int = 10,
         score_threshold: Optional[float] = None,
         document_filter: Optional[UUID] = None,
+        user_id: Optional[UUID] = None,
+        user_domains: Optional[List[str]] = None,
     ) -> List[Dict]:
-        """Search for documents using semantic search.
+        """Search for documents using semantic search with access control.
 
         Args:
             query: Search query string
             limit: Maximum number of results
             score_threshold: Minimum similarity score (0-1)
             document_filter: Optional document UUID to filter by
+            user_id: User ID for access control filtering
+            user_domains: List of domains user has access to
 
         Returns:
             List of search results with scores, text, and metadata
@@ -147,19 +151,21 @@ class VectorStore:
         if not query or not query.strip():
             raise ValueError("Query cannot be empty")
 
-        logger.info(f"Searching for: '{query[:50]}...'")
+        logger.info(f"Searching for: '{query[:50]}...' (user_id={user_id}, domains={user_domains})")
 
         # Step 1: Generate query embedding
         logger.debug("Generating query embedding...")
         query_vector = await self.embedding_service.embed_query(query)
 
-        # Step 2: Search in Qdrant
-        logger.debug("Searching vectors...")
+        # Step 2: Search in Qdrant with access control
+        logger.debug("Searching vectors with access control...")
         results = await self.qdrant.search_vectors(
             query_vector=query_vector,
             limit=limit,
             score_threshold=score_threshold,
             document_filter=document_filter,
+            user_id=user_id,
+            user_domains=user_domains,
         )
 
         logger.info(f"Found {len(results)} results")

@@ -7,8 +7,8 @@ from typing import List, Optional
 from uuid import UUID
 import logging
 
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Query, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Query, Form, status
+from sqlalchemy import select, or_, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 
@@ -61,6 +61,9 @@ class SearchRequest(BaseModel):
     limit: int = Field(10, ge=1, le=100, description="Maximum number of results")
     score_threshold: Optional[float] = Field(
         None, ge=0.0, le=1.0, description="Minimum similarity score"
+    )
+    user_domains: Optional[List[str]] = Field(
+        None, description="List of domains user has access to (e.g., ['finance', 'legal'])"
     )
 
 
@@ -144,6 +147,8 @@ def detect_file_type(filename: str) -> str:
 @router.post("/upload", response_model=DocumentUploadResponse)
 async def upload_document(
     file: UploadFile = File(...),
+    access_type: str = Form(..., description="Access type: private, domain, or public"),
+    access_domains: Optional[str] = Form(None, description="Comma-separated domains (e.g., 'finance,legal') for domain access type"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -156,8 +161,15 @@ async def upload_document(
     4. Generate embeddings and store in vector database
     5. Save document metadata to database
 
+    Access Control:
+    - private: Only the uploader can access (for emails)
+    - domain: Users with matching domains can access (for news/reports)
+    - public: All authenticated users can access
+
     Args:
         file: Uploaded file
+        access_type: Access type (private/domain/public)
+        access_domains: Comma-separated domain list for domain-based access
         current_user: Authenticated user
         db: Database session
 
@@ -175,16 +187,44 @@ async def upload_document(
             detail="No filename provided",
         )
 
+    # Validate access_type
+    if access_type not in ["private", "domain", "public"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid access_type. Must be 'private', 'domain', or 'public'",
+        )
+
+    # Process access_domains
+    domains_list = None
+    if access_type == "domain":
+        if not access_domains:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="access_domains is required when access_type is 'domain'",
+            )
+        # Split comma-separated domains and clean whitespace
+        domains_list = [d.strip() for d in access_domains.split(",") if d.strip()]
+        if not domains_list:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="access_domains cannot be empty for domain access type",
+            )
+        logger.info(f"Document will be accessible to domains: {domains_list}")
+
     # Detect file type
     file_type = detect_file_type(file.filename)
 
-    # Create document record
+    # Create document record with access control
     document = Document(
         filename=file.filename,
         file_type=file_type,
         status="processing",
         uploaded_by=current_user.id,
+        access_type=access_type,
+        owner_id=current_user.id if access_type == "private" else None,
+        access_domains=domains_list,
     )
+    logger.info(f"Document access: type={access_type}, owner={document.owner_id}, domains={domains_list}")
     db.add(document)
     await db.flush()  # Get document ID
     await db.commit()
@@ -228,6 +268,9 @@ async def upload_document(
             metadata={
                 "filename": file.filename,
                 "file_type": file_type,
+                "access_type": document.access_type,
+                "owner_id": str(document.owner_id) if document.owner_id else None,
+                "access_domains": document.access_domains or [],
             },
         )
 
@@ -275,32 +318,73 @@ async def upload_document(
 async def list_documents(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
+    user_domains: Optional[str] = Query(None, description="Comma-separated domains user has access to"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all documents.
+    """List documents accessible to the user based on access control.
+
+    Access Control:
+    - Public documents: All users can see
+    - Private documents: Only owner can see
+    - Domain documents: Only users with matching domains can see
 
     Args:
         skip: Number of documents to skip (pagination)
         limit: Maximum number of documents to return
+        user_domains: Comma-separated domains user has access to
         current_user: Authenticated user
         db: Database session
 
     Returns:
-        DocumentListResponse with list of documents
+        DocumentListResponse with list of accessible documents
     """
-    # Get documents
+    # Parse user domains
+    domains_list = []
+    if user_domains:
+        domains_list = [d.strip() for d in user_domains.split(",") if d.strip()]
+
+    logger.info(f"Listing documents for user {current_user.email} with domains: {domains_list}")
+
+    # Build access control filter
+    access_filters = [
+        # 1. Public documents
+        Document.access_type == "public",
+        # 2. Private documents owned by user
+        and_(
+            Document.access_type == "private",
+            Document.owner_id == current_user.id
+        ),
+    ]
+
+    # 3. Domain-based access - check if user's domains overlap with document's domains
+    if domains_list:
+        # Use PostgreSQL's overlap operator (&&) for JSON arrays
+        # Check if any of user's domains appear in document's access_domains
+        for domain in domains_list:
+            access_filters.append(
+                and_(
+                    Document.access_type == "domain",
+                    Document.access_domains.contains([domain])
+                )
+            )
+
+    # Get documents with access control
     result = await db.execute(
         select(Document)
+        .where(or_(*access_filters))
         .order_by(Document.created_at.desc())
         .offset(skip)
         .limit(limit)
     )
     documents = result.scalars().all()
 
-    # Get total count
-    count_result = await db.execute(select(Document))
-    total = len(count_result.scalars().all())
+    # Get total count with same filter
+    count_result = await db.execute(
+        select(func.count(Document.id))
+        .where(or_(*access_filters))
+    )
+    total = count_result.scalar()
 
     return DocumentListResponse(
         documents=[
@@ -404,29 +488,37 @@ async def search_documents(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Search documents using semantic search.
+    """Search documents using semantic search with access control.
+
+    Access Control:
+    - Public documents: All users can see
+    - Private documents: Only owner can see
+    - Domain documents: Only users with matching domains can see
 
     Args:
-        search_request: Search parameters
+        search_request: Search parameters including user_domains
         current_user: Authenticated user
         db: Database session
 
     Returns:
-        SearchResponse with matching document chunks
+        SearchResponse with matching document chunks (filtered by access)
     """
     logger.info(
-        f"Search request: '{search_request.query[:50]}...' by user {current_user.id}"
+        f"Search request: '{search_request.query[:50]}...' by user {current_user.email} "
+        f"(domains: {search_request.user_domains})"
     )
 
-    # Perform vector search
+    # Perform vector search with access control
     vector_store = VectorStore()
     results = await vector_store.search(
         query=search_request.query,
         limit=search_request.limit,
         score_threshold=search_request.score_threshold,
+        user_id=current_user.id,
+        user_domains=search_request.user_domains or [],
     )
 
-    logger.info(f"Search returned {len(results)} results")
+    logger.info(f"Search returned {len(results)} accessible results")
 
     return SearchResponse(
         results=[
