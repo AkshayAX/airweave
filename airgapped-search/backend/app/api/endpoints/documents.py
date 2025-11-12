@@ -410,28 +410,66 @@ async def list_documents(
 @router.get("/{document_id}", response_model=DocumentResponse)
 async def get_document(
     document_id: UUID,
-    current_user: User = Depends(get_current_user),
+    user_email: str = Query(..., description="Email of user requesting document (from external auth)"),
+    user_domains: Optional[str] = Query(None, description="Comma-separated domains user has access to"),
     db: AsyncSession = Depends(get_db),
 ):
     """Get details of a specific document.
 
+    Access control applied - user can only view documents they have access to.
+
+    Note: No authentication here - user info comes from external Microsoft OAuth
+
     Args:
         document_id: Document UUID
-        current_user: Authenticated user
+        user_email: Email of user requesting document (from external auth)
+        user_domains: Comma-separated domains user has access to
         db: Database session
 
     Returns:
         DocumentResponse with document details
     """
+    # Parse user domains
+    domains_list = []
+    if user_domains:
+        domains_list = [d.strip() for d in user_domains.split(",") if d.strip()]
+
+    # Build access control filter (same as list_documents)
+    access_filters = [
+        # 1. Public documents
+        Document.access_type == "public",
+        # 2. Private documents owned by user
+        and_(
+            Document.access_type == "private",
+            Document.owner_email == user_email
+        ),
+    ]
+
+    # 3. Domain-based access
+    if domains_list:
+        for domain in domains_list:
+            access_filters.append(
+                and_(
+                    Document.access_type == "domain",
+                    Document.access_domains.contains([domain])
+                )
+            )
+
+    # Get document with access control
     result = await db.execute(
-        select(Document).where(Document.id == document_id)
+        select(Document).where(
+            and_(
+                Document.id == document_id,
+                or_(*access_filters)
+            )
+        )
     )
     document = result.scalar_one_or_none()
 
     if not document:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Document not found",
+            detail="Document not found or access denied",
         )
 
     return DocumentResponse(
