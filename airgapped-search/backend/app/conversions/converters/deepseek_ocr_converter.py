@@ -294,10 +294,11 @@ class DeepSeekOCRConverter(BaseTextConverter):
                             test_compress=False  # No compression testing needed
                         )
 
-                        # Extract text from result
-                        # The infer method returns text output
-                        if result and isinstance(result, str):
-                            return result.strip() if result.strip() else None
+                        # Extract text from result dictionary
+                        # The infer method returns a dict with at least a "text" key
+                        if result and isinstance(result, dict):
+                            text = result.get("text", "")
+                            return text.strip() if text and text.strip() else None
                         else:
                             logger.warning(f"Unexpected result type from infer(): {type(result)}")
                             return None
