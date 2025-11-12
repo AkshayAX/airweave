@@ -12,8 +12,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 
-from app.database.models import Document, User, UserOrganization
-from app.api.deps import get_db, get_current_user, require_org_access
+from app.database.models import Document, User
+from app.api.deps import get_db, get_current_user, require_admin
 from app.conversions.converter_factory import ConverterFactory
 from app.search.vector_store import VectorStore
 
@@ -37,7 +37,6 @@ class DocumentResponse(BaseModel):
     """Response model for document details."""
 
     id: str
-    organization_id: str
     filename: str
     file_type: str
     status: str
@@ -144,10 +143,8 @@ def detect_file_type(filename: str) -> str:
 
 @router.post("/upload", response_model=DocumentUploadResponse)
 async def upload_document(
-    organization_id: UUID,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
-    user_org: UserOrganization = Depends(require_org_access),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload and process a document for search.
@@ -160,18 +157,15 @@ async def upload_document(
     5. Save document metadata to database
 
     Args:
-        organization_id: Organization UUID
         file: Uploaded file
         current_user: Authenticated user
-        user_org: User's org membership
         db: Database session
 
     Returns:
         DocumentUploadResponse with document ID and status
     """
     logger.info(
-        f"Document upload started: {file.filename} by user {current_user.id} "
-        f"for org {organization_id}"
+        f"Document upload started: {file.filename} by user {current_user.id}"
     )
 
     # Validate file
@@ -186,10 +180,10 @@ async def upload_document(
 
     # Create document record
     document = Document(
-        organization_id=organization_id,
         filename=file.filename,
         file_type=file_type,
         status="processing",
+        uploaded_by=current_user.id,
     )
     db.add(document)
     await db.flush()  # Get document ID
@@ -202,6 +196,7 @@ async def upload_document(
             content = await file.read()
             temp_file.write(content)
             temp_file_path = temp_file.name
+            document.file_size = len(content)
 
         logger.debug(f"File saved to temp: {temp_file_path}")
 
@@ -228,7 +223,6 @@ async def upload_document(
         logger.debug("Indexing document in vector store...")
         vector_store = VectorStore()
         index_result = await vector_store.index_document(
-            organization_id=organization_id,
             document_id=document.id,
             text=text_content,
             metadata={
@@ -259,6 +253,7 @@ async def upload_document(
 
         # Update document status to failed
         document.status = "failed"
+        document.error_message = str(e)
         await db.commit()
 
         raise HTTPException(
@@ -278,21 +273,17 @@ async def upload_document(
 
 @router.get("/", response_model=DocumentListResponse)
 async def list_documents(
-    organization_id: UUID,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     current_user: User = Depends(get_current_user),
-    user_org: UserOrganization = Depends(require_org_access),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all documents in an organization.
+    """List all documents.
 
     Args:
-        organization_id: Organization UUID
         skip: Number of documents to skip (pagination)
         limit: Maximum number of documents to return
         current_user: Authenticated user
-        user_org: User's org membership
         db: Database session
 
     Returns:
@@ -301,7 +292,6 @@ async def list_documents(
     # Get documents
     result = await db.execute(
         select(Document)
-        .where(Document.organization_id == organization_id)
         .order_by(Document.created_at.desc())
         .offset(skip)
         .limit(limit)
@@ -309,21 +299,18 @@ async def list_documents(
     documents = result.scalars().all()
 
     # Get total count
-    count_result = await db.execute(
-        select(Document).where(Document.organization_id == organization_id)
-    )
+    count_result = await db.execute(select(Document))
     total = len(count_result.scalars().all())
 
     return DocumentListResponse(
         documents=[
             DocumentResponse(
                 id=str(doc.id),
-                organization_id=str(doc.organization_id),
                 filename=doc.filename,
                 file_type=doc.file_type,
                 status=doc.status,
                 created_at=doc.created_at.isoformat(),
-                updated_at=doc.updated_at.isoformat(),
+                updated_at=doc.modified_at.isoformat(),
             )
             for doc in documents
         ],
@@ -333,29 +320,22 @@ async def list_documents(
 
 @router.get("/{document_id}", response_model=DocumentResponse)
 async def get_document(
-    organization_id: UUID,
     document_id: UUID,
     current_user: User = Depends(get_current_user),
-    user_org: UserOrganization = Depends(require_org_access),
     db: AsyncSession = Depends(get_db),
 ):
     """Get details of a specific document.
 
     Args:
-        organization_id: Organization UUID
         document_id: Document UUID
         current_user: Authenticated user
-        user_org: User's org membership
         db: Database session
 
     Returns:
         DocumentResponse with document details
     """
     result = await db.execute(
-        select(Document).where(
-            Document.id == document_id,
-            Document.organization_id == organization_id,
-        )
+        select(Document).where(Document.id == document_id)
     )
     document = result.scalar_one_or_none()
 
@@ -367,47 +347,32 @@ async def get_document(
 
     return DocumentResponse(
         id=str(document.id),
-        organization_id=str(document.organization_id),
         filename=document.filename,
         file_type=document.file_type,
         status=document.status,
         created_at=document.created_at.isoformat(),
-        updated_at=document.updated_at.isoformat(),
+        updated_at=document.modified_at.isoformat(),
     )
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(
-    organization_id: UUID,
     document_id: UUID,
-    current_user: User = Depends(get_current_user),
-    user_org: UserOrganization = Depends(require_org_access),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a document and its vectors.
 
-    Requires admin or owner role.
+    Requires admin access.
 
     Args:
-        organization_id: Organization UUID
         document_id: Document UUID
-        current_user: Authenticated user
-        user_org: User's org membership
+        current_user: Authenticated admin user
         db: Database session
     """
-    # Check role (admin or owner required)
-    if user_org.role not in ["admin", "owner"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Requires admin or owner role to delete documents",
-        )
-
     # Get document
     result = await db.execute(
-        select(Document).where(
-            Document.id == document_id,
-            Document.organization_id == organization_id,
-        )
+        select(Document).where(Document.id == document_id)
     )
     document = result.scalar_one_or_none()
 
@@ -420,16 +385,13 @@ async def delete_document(
     # Delete vectors from Qdrant
     try:
         vector_store = VectorStore()
-        await vector_store.delete_document(
-            organization_id=organization_id,
-            document_id=document_id,
-        )
+        await vector_store.delete_document(document_id=document_id)
         logger.info(f"Vectors deleted for document {document_id}")
     except Exception as e:
         logger.error(f"Failed to delete vectors: {e}", exc_info=True)
         # Continue with database deletion even if vector deletion fails
 
-    # Delete document from database
+    # Delete document from database (will cascade to chunks)
     await db.delete(document)
     await db.commit()
 
@@ -438,33 +400,27 @@ async def delete_document(
 
 @router.post("/search", response_model=SearchResponse)
 async def search_documents(
-    organization_id: UUID,
     search_request: SearchRequest,
     current_user: User = Depends(get_current_user),
-    user_org: UserOrganization = Depends(require_org_access),
     db: AsyncSession = Depends(get_db),
 ):
     """Search documents using semantic search.
 
     Args:
-        organization_id: Organization UUID
         search_request: Search parameters
         current_user: Authenticated user
-        user_org: User's org membership
         db: Database session
 
     Returns:
         SearchResponse with matching document chunks
     """
     logger.info(
-        f"Search request: '{search_request.query[:50]}...' "
-        f"in org {organization_id} by user {current_user.id}"
+        f"Search request: '{search_request.query[:50]}...' by user {current_user.id}"
     )
 
     # Perform vector search
     vector_store = VectorStore()
     results = await vector_store.search(
-        organization_id=organization_id,
         query=search_request.query,
         limit=search_request.limit,
         score_threshold=search_request.score_threshold,

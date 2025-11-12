@@ -17,13 +17,6 @@ class Chunk(Base):
 
     __tablename__ = "chunk"
 
-    # Multi-tenant isolation (denormalized for fast filtering)
-    organization_id: Mapped[UUID] = mapped_column(
-        ForeignKey("organization.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True
-    )
-
     # Parent document
     document_id: Mapped[UUID] = mapped_column(
         ForeignKey("document.id", ondelete="CASCADE"),
@@ -40,7 +33,7 @@ class Chunk(Base):
 
     # Chunk metadata
     token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    char_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    char_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
     # Relationships
     document: Mapped["Document"] = relationship(

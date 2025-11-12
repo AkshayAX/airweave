@@ -7,7 +7,7 @@ from fastapi import Depends, HTTPException, Header, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models import User, UserOrganization
+from app.database.models import User
 from app.api.deps.database import get_db
 
 
@@ -66,74 +66,24 @@ async def get_current_user(
         )
 
 
-async def require_org_access(
-    organization_id: UUID,
+async def require_admin(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> UserOrganization:
-    """Verify user has access to organization.
+) -> User:
+    """Verify user is an admin.
 
     Args:
-        organization_id: Organization UUID to check access for
         current_user: Current authenticated user
-        db: Database session
 
     Returns:
-        UserOrganization: User's membership in the organization
+        User: Authenticated admin user
 
     Raises:
-        HTTPException: If user doesn't have access
+        HTTPException: If user is not an admin
     """
-    result = await db.execute(
-        select(UserOrganization).where(
-            UserOrganization.user_id == current_user.id,
-            UserOrganization.organization_id == organization_id,
-        )
-    )
-    user_org = result.scalar_one_or_none()
-
-    if not user_org:
+    if not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied to this organization",
+            detail="Admin access required",
         )
 
-    return user_org
-
-
-def require_role(required_role: str):
-    """Dependency factory to require specific role in organization.
-
-    Role hierarchy: member < admin < owner
-
-    Args:
-        required_role: Minimum required role (member, admin, owner)
-
-    Returns:
-        Dependency function that checks role
-
-    Example:
-        @router.delete("/documents/{document_id}")
-        async def delete_document(
-            user_org: UserOrganization = Depends(require_role("admin")),
-        ):
-            # Only admins and owners can access this
-            ...
-    """
-    ROLE_HIERARCHY = {"member": 0, "admin": 1, "owner": 2}
-
-    async def check_role(
-        user_org: UserOrganization = Depends(require_org_access),
-    ) -> UserOrganization:
-        user_role_level = ROLE_HIERARCHY.get(user_org.role, -1)
-        required_role_level = ROLE_HIERARCHY.get(required_role, 999)
-
-        if user_role_level < required_role_level:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Requires {required_role} role or higher",
-            )
-
-        return user_org
-
-    return check_role
+    return current_user
