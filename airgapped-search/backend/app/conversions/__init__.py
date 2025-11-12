@@ -8,6 +8,7 @@ from .converters.code_converter import CodeConverter
 from .converters.pdf_converter import PdfConverter
 from .converters.docx_converter import DocxConverter
 from .converters.deepseek_ocr_converter import DeepSeekOCRConverter
+from .converter_factory import ConverterFactory
 
 # Singleton instances
 txt_converter = TxtConverter()
@@ -44,6 +45,7 @@ __all__ = [
     "PdfConverter",
     "DocxConverter",
     "DeepSeekOCRConverter",
+    "ConverterFactory",
     "txt_converter",
     "html_converter",
     "xlsx_converter",
