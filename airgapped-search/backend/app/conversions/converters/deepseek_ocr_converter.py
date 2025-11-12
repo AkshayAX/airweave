@@ -76,7 +76,7 @@ class DeepSeekOCRConverter(BaseTextConverter):
             return
 
         try:
-            from transformers import AutoModelForCausalLM, AutoProcessor
+            from transformers import AutoModel, AutoProcessor
             import torch
         except ImportError:
             raise Exception(
@@ -87,8 +87,8 @@ class DeepSeekOCRConverter(BaseTextConverter):
         logger.info("Loading DeepSeek-OCR model (this may take a few minutes on first run)...")
 
         try:
-            # Load vision-language model for causal LM (text generation)
-            self._model = AutoModelForCausalLM.from_pretrained(
+            # Load vision-language model (AutoModel handles custom model types with trust_remote_code)
+            self._model = AutoModel.from_pretrained(
                 "deepseek-ai/DeepSeek-OCR",
                 trust_remote_code=True,
                 torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
