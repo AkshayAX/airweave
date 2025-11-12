@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class VectorStore:
     """High-level service for document indexing and vector search.
 
-    Combines chunking, embedding, and vector storage.
+    Combines chunking, embedding, and vector storage in a single collection.
     """
 
     def __init__(self):
@@ -32,7 +32,6 @@ class VectorStore:
 
     async def index_document(
         self,
-        organization_id: UUID,
         document_id: UUID,
         text: str,
         metadata: Optional[Dict] = None,
@@ -45,7 +44,6 @@ class VectorStore:
         3. Store vectors in Qdrant with metadata
 
         Args:
-            organization_id: Organization UUID
             document_id: Document UUID
             text: Document text content
             metadata: Optional metadata (filename, file_type, etc.)
@@ -56,7 +54,7 @@ class VectorStore:
         if not text or not text.strip():
             raise ValueError("Document text cannot be empty")
 
-        logger.info(f"Indexing document {document_id} for org {organization_id}")
+        logger.info(f"Indexing document {document_id}")
 
         # Step 1: Chunk the document
         logger.debug("Chunking document...")
@@ -93,7 +91,6 @@ class VectorStore:
             # Prepare payload
             payload = {
                 "document_id": str(document_id),
-                "organization_id": str(organization_id),
                 "chunk_index": i,
                 "text": chunk["text"],
                 "start_index": chunk["start_index"],
@@ -115,39 +112,34 @@ class VectorStore:
 
         # Step 5: Upsert to Qdrant
         logger.debug("Storing vectors in Qdrant...")
-        result = await self.qdrant.upsert_vectors(
-            organization_id=organization_id,
-            points=points,
-        )
+        result = await self.qdrant.upsert_vectors(points=points)
 
         logger.info(
             f"✓ Document {document_id} indexed: {len(chunks)} chunks, "
-            f"{len(embeddings)} vectors"
+            f"{len(points)} vectors"
         )
 
         return {
             "document_id": str(document_id),
             "chunks_count": len(chunks),
-            "vectors_stored": result["upserted"],
+            "vectors_stored": result["points_count"],
             "collection": result["collection"],
         }
 
     async def search(
         self,
-        organization_id: UUID,
         query: str,
         limit: int = 10,
         score_threshold: Optional[float] = None,
-        metadata_filters: Optional[Dict] = None,
+        document_filter: Optional[UUID] = None,
     ) -> List[Dict]:
         """Search for documents using semantic search.
 
         Args:
-            organization_id: Organization UUID
             query: Search query string
             limit: Maximum number of results
             score_threshold: Minimum similarity score (0-1)
-            metadata_filters: Optional filters (e.g., {"file_type": "pdf"})
+            document_filter: Optional document UUID to filter by
 
         Returns:
             List of search results with scores, text, and metadata
@@ -155,7 +147,7 @@ class VectorStore:
         if not query or not query.strip():
             raise ValueError("Query cannot be empty")
 
-        logger.info(f"Searching for: '{query[:50]}...' in org {organization_id}")
+        logger.info(f"Searching for: '{query[:50]}...'")
 
         # Step 1: Generate query embedding
         logger.debug("Generating query embedding...")
@@ -164,11 +156,10 @@ class VectorStore:
         # Step 2: Search in Qdrant
         logger.debug("Searching vectors...")
         results = await self.qdrant.search_vectors(
-            organization_id=organization_id,
             query_vector=query_vector,
             limit=limit,
             score_threshold=score_threshold,
-            filter_conditions=metadata_filters,
+            document_filter=document_filter,
         )
 
         logger.info(f"Found {len(results)} results")
@@ -183,21 +174,16 @@ class VectorStore:
                 "text": result["payload"].get("text"),
                 "metadata": {
                     k: v for k, v in result["payload"].items()
-                    if k not in ["text", "document_id", "chunk_index", "organization_id"]
+                    if k not in ["text", "document_id", "chunk_index"]
                 },
             })
 
         return formatted_results
 
-    async def delete_document(
-        self,
-        organization_id: UUID,
-        document_id: UUID,
-    ) -> Dict:
+    async def delete_document(self, document_id: UUID) -> Dict:
         """Delete all vectors for a document.
 
         Args:
-            organization_id: Organization UUID
             document_id: Document UUID
 
         Returns:
@@ -205,22 +191,16 @@ class VectorStore:
         """
         logger.info(f"Deleting vectors for document {document_id}")
 
-        result = await self.qdrant.delete_document_vectors(
-            organization_id=organization_id,
-            document_id=document_id,
-        )
+        result = await self.qdrant.delete_document_vectors(document_id=document_id)
 
         logger.info(f"✓ Vectors deleted for document {document_id}")
 
         return result
 
-    async def get_collection_stats(self, organization_id: UUID) -> Dict:
-        """Get statistics for an organization's collection.
-
-        Args:
-            organization_id: Organization UUID
+    async def get_collection_stats(self) -> Dict:
+        """Get statistics for the collection.
 
         Returns:
             Dict with collection statistics
         """
-        return await self.qdrant.get_collection_info(organization_id)
+        return await self.qdrant.get_collection_info()

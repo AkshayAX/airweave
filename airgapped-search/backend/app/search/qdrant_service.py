@@ -1,6 +1,6 @@
 """Qdrant vector database service for managing collections and search.
 
-Handles connection, collection management, and vector operations.
+Handles connection, collection management, and vector operations with a single collection.
 """
 
 from typing import Dict, List, Optional
@@ -26,8 +26,10 @@ logger = logging.getLogger(__name__)
 class QdrantService:
     """Service for interacting with Qdrant vector database.
 
-    Manages collections per organization for multi-tenant isolation.
+    Uses a single 'documents' collection for all documents.
     """
+
+    COLLECTION_NAME = "documents"
 
     def __init__(self):
         """Initialize Qdrant client."""
@@ -39,263 +41,245 @@ class QdrantService:
         self.embedding_dimension = settings.EMBEDDING_DIMENSION
         logger.info(f"Qdrant client initialized: {settings.QDRANT_HOST}:{settings.QDRANT_PORT}")
 
-    def get_collection_name(self, organization_id: UUID) -> str:
-        """Get collection name for an organization.
-
-        Args:
-            organization_id: Organization UUID
-
-        Returns:
-            Collection name string
-        """
-        return f"org_{str(organization_id).replace('-', '_')}"
-
-    async def ensure_collection_exists(self, organization_id: UUID) -> str:
-        """Ensure a collection exists for the organization.
+    async def ensure_collection_exists(self) -> str:
+        """Ensure the documents collection exists.
 
         Creates the collection if it doesn't exist.
-
-        Args:
-            organization_id: Organization UUID
 
         Returns:
             Collection name
         """
-        collection_name = self.get_collection_name(organization_id)
+        collection_name = self.COLLECTION_NAME
 
         # Check if collection exists
-        try:
-            collections = self.client.get_collections().collections
-            exists = any(c.name == collection_name for c in collections)
-        except Exception as e:
-            logger.error(f"Failed to list collections: {e}")
-            raise
+        collections = self.client.get_collections().collections
+        exists = any(c.name == collection_name for c in collections)
 
         if not exists:
-            # Create collection
-            try:
-                self.client.create_collection(
-                    collection_name=collection_name,
-                    vectors_config=VectorParams(
-                        size=self.embedding_dimension,
-                        distance=Distance.COSINE,
-                    ),
-                )
-                logger.info(f"Created collection: {collection_name}")
-            except Exception as e:
-                logger.error(f"Failed to create collection {collection_name}: {e}")
-                raise
+            logger.info(f"Creating collection: {collection_name}")
+            self.client.create_collection(
+                collection_name=collection_name,
+                vectors_config=VectorParams(
+                    size=self.embedding_dimension,
+                    distance=Distance.COSINE,
+                ),
+            )
+            logger.info(f"✓ Collection created: {collection_name}")
+        else:
+            logger.debug(f"Collection already exists: {collection_name}")
 
         return collection_name
 
     async def upsert_vectors(
         self,
-        organization_id: UUID,
         points: List[PointStruct],
-    ) -> Dict[str, int]:
+    ) -> Dict:
         """Insert or update vectors in the collection.
 
         Args:
-            organization_id: Organization UUID
             points: List of PointStruct objects with vectors and payloads
 
         Returns:
-            Dict with operation statistics
+            Dictionary with operation status
         """
-        collection_name = await self.ensure_collection_exists(organization_id)
+        collection_name = await self.ensure_collection_exists()
 
-        try:
-            # Upsert points
-            operation_info = self.client.upsert(
-                collection_name=collection_name,
-                points=points,
-            )
+        logger.debug(f"Upserting {len(points)} points to {collection_name}")
 
-            logger.info(
-                f"Upserted {len(points)} vectors to {collection_name}. "
-                f"Status: {operation_info.status}"
-            )
+        # Upsert points
+        result = self.client.upsert(
+            collection_name=collection_name,
+            points=points,
+        )
 
-            return {
-                "collection": collection_name,
-                "upserted": len(points),
-                "status": operation_info.status,
-            }
+        logger.info(f"✓ Upserted {len(points)} vectors to {collection_name}")
 
-        except Exception as e:
-            logger.error(f"Failed to upsert vectors to {collection_name}: {e}")
-            raise
+        return {
+            "collection": collection_name,
+            "points_count": len(points),
+            "status": result.status.name if hasattr(result, 'status') else "completed",
+        }
 
     async def search_vectors(
         self,
-        organization_id: UUID,
         query_vector: List[float],
         limit: int = 10,
         score_threshold: Optional[float] = None,
-        filter_conditions: Optional[Dict] = None,
+        document_filter: Optional[UUID] = None,
     ) -> List[Dict]:
         """Search for similar vectors in the collection.
 
         Args:
-            organization_id: Organization UUID
             query_vector: Query embedding vector
             limit: Maximum number of results
-            score_threshold: Minimum similarity score (0-1)
-            filter_conditions: Optional metadata filters
+            score_threshold: Minimum similarity score (0.0 to 1.0)
+            document_filter: Optional document UUID to filter by
 
         Returns:
             List of search results with scores and payloads
         """
-        collection_name = self.get_collection_name(organization_id)
+        collection_name = self.COLLECTION_NAME
 
-        # Check if collection exists
-        try:
-            collections = self.client.get_collections().collections
-            exists = any(c.name == collection_name for c in collections)
-            if not exists:
-                logger.warning(f"Collection {collection_name} does not exist")
-                return []
-        except Exception as e:
-            logger.error(f"Failed to check collection existence: {e}")
-            raise
-
-        # Build filter
-        search_filter = None
-        if filter_conditions:
-            # Build Qdrant filter from conditions
-            field_conditions = []
-            for field, value in filter_conditions.items():
-                field_conditions.append(
-                    FieldCondition(key=field, match=MatchValue(value=value))
-                )
-            if field_conditions:
-                search_filter = Filter(must=field_conditions)
-
-        try:
-            # Perform search
-            search_results = self.client.search(
-                collection_name=collection_name,
-                query_vector=query_vector,
-                limit=limit,
-                score_threshold=score_threshold,
-                query_filter=search_filter,
+        # Build filter if document_filter is provided
+        query_filter = None
+        if document_filter:
+            query_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="document_id",
+                        match=MatchValue(value=str(document_filter)),
+                    )
+                ]
             )
 
-            results = []
-            for hit in search_results:
-                results.append({
-                    "id": hit.id,
-                    "score": hit.score,
-                    "payload": hit.payload,
-                })
+        logger.debug(
+            f"Searching {collection_name}: limit={limit}, "
+            f"threshold={score_threshold}, filter={document_filter}"
+        )
 
-            logger.debug(f"Vector search returned {len(results)} results")
-            return results
+        # Perform search
+        search_result = self.client.search(
+            collection_name=collection_name,
+            query_vector=query_vector,
+            limit=limit,
+            score_threshold=score_threshold,
+            query_filter=query_filter,
+        )
 
-        except Exception as e:
-            logger.error(f"Vector search failed in {collection_name}: {e}")
-            raise
-
-    async def delete_vectors(
-        self,
-        organization_id: UUID,
-        point_ids: List[str],
-    ) -> Dict[str, int]:
-        """Delete vectors from the collection.
-
-        Args:
-            organization_id: Organization UUID
-            point_ids: List of point IDs to delete
-
-        Returns:
-            Dict with operation statistics
-        """
-        collection_name = self.get_collection_name(organization_id)
-
-        try:
-            operation_info = self.client.delete(
-                collection_name=collection_name,
-                points_selector=point_ids,
-            )
-
-            logger.info(f"Deleted {len(point_ids)} vectors from {collection_name}")
-
-            return {
-                "collection": collection_name,
-                "deleted": len(point_ids),
-                "status": operation_info.status,
+        # Format results
+        results = [
+            {
+                "id": hit.id,
+                "score": hit.score,
+                "payload": hit.payload,
             }
+            for hit in search_result
+        ]
 
-        except Exception as e:
-            logger.error(f"Failed to delete vectors from {collection_name}: {e}")
-            raise
+        logger.info(f"Search returned {len(results)} results")
 
-    async def delete_document_vectors(
-        self,
-        organization_id: UUID,
-        document_id: UUID,
-    ) -> Dict[str, int]:
-        """Delete all vectors for a document.
+        return results
+
+    async def delete_document_vectors(self, document_id: UUID) -> Dict:
+        """Delete all vectors for a specific document.
 
         Args:
-            organization_id: Organization UUID
             document_id: Document UUID
 
         Returns:
-            Dict with operation statistics
+            Dictionary with deletion status
         """
-        collection_name = self.get_collection_name(organization_id)
+        collection_name = self.COLLECTION_NAME
 
-        try:
-            # Delete by filter
-            operation_info = self.client.delete(
-                collection_name=collection_name,
-                points_selector=Filter(
-                    must=[
-                        FieldCondition(
-                            key="document_id",
-                            match=MatchValue(value=str(document_id)),
-                        )
-                    ]
-                ),
-            )
+        logger.debug(f"Deleting vectors for document {document_id}")
 
-            logger.info(f"Deleted vectors for document {document_id} from {collection_name}")
+        # Delete points by filter
+        self.client.delete(
+            collection_name=collection_name,
+            points_selector=Filter(
+                must=[
+                    FieldCondition(
+                        key="document_id",
+                        match=MatchValue(value=str(document_id)),
+                    )
+                ]
+            ),
+        )
 
-            return {
-                "collection": collection_name,
-                "document_id": str(document_id),
-                "status": operation_info.status,
-            }
+        logger.info(f"✓ Deleted vectors for document {document_id}")
 
-        except Exception as e:
-            logger.error(f"Failed to delete document vectors: {e}")
-            raise
+        return {
+            "collection": collection_name,
+            "document_id": str(document_id),
+            "status": "deleted",
+        }
 
-    async def get_collection_info(self, organization_id: UUID) -> Dict:
-        """Get collection information and statistics.
+    async def delete_vectors_by_ids(self, vector_ids: List[str]) -> Dict:
+        """Delete vectors by their IDs.
 
         Args:
-            organization_id: Organization UUID
+            vector_ids: List of vector IDs to delete
 
         Returns:
-            Dict with collection information
+            Dictionary with deletion status
         """
-        collection_name = self.get_collection_name(organization_id)
+        collection_name = self.COLLECTION_NAME
+
+        logger.debug(f"Deleting {len(vector_ids)} vectors by ID")
+
+        # Delete points by ID
+        self.client.delete(
+            collection_name=collection_name,
+            points_selector=vector_ids,
+        )
+
+        logger.info(f"✓ Deleted {len(vector_ids)} vectors")
+
+        return {
+            "collection": collection_name,
+            "deleted_count": len(vector_ids),
+            "status": "deleted",
+        }
+
+    async def get_collection_info(self) -> Dict:
+        """Get information about the collection.
+
+        Returns:
+            Dictionary with collection information
+        """
+        collection_name = self.COLLECTION_NAME
 
         try:
             info = self.client.get_collection(collection_name=collection_name)
 
             return {
                 "name": collection_name,
-                "vectors_count": info.vectors_count,
-                "points_count": info.points_count,
-                "status": info.status,
+                "vectors_count": info.vectors_count if hasattr(info, 'vectors_count') else 0,
+                "points_count": info.points_count if hasattr(info, 'points_count') else 0,
+                "status": info.status.name if hasattr(info, 'status') else "unknown",
             }
-
         except Exception as e:
-            logger.error(f"Failed to get collection info: {e}")
+            logger.warning(f"Could not get collection info: {e}")
             return {
                 "name": collection_name,
                 "error": str(e),
             }
+
+    async def collection_exists(self) -> bool:
+        """Check if the collection exists.
+
+        Returns:
+            True if collection exists, False otherwise
+        """
+        collections = self.client.get_collections().collections
+        return any(c.name == self.COLLECTION_NAME for c in collections)
+
+    async def count_vectors(self, document_filter: Optional[UUID] = None) -> int:
+        """Count vectors in the collection, optionally filtered by document.
+
+        Args:
+            document_filter: Optional document UUID to filter by
+
+        Returns:
+            Number of vectors
+        """
+        collection_name = self.COLLECTION_NAME
+
+        if document_filter:
+            # Count with filter
+            result = self.client.count(
+                collection_name=collection_name,
+                count_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="document_id",
+                            match=MatchValue(value=str(document_filter)),
+                        )
+                    ]
+                ),
+            )
+            return result.count
+        else:
+            # Count all
+            info = await self.get_collection_info()
+            return info.get("points_count", 0)
