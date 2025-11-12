@@ -76,7 +76,7 @@ class DeepSeekOCRConverter(BaseTextConverter):
             return
 
         try:
-            from transformers import AutoModel, AutoTokenizer
+            from transformers import AutoModelForCausalLM, AutoProcessor
             import torch
         except ImportError:
             raise Exception(
@@ -87,14 +87,15 @@ class DeepSeekOCRConverter(BaseTextConverter):
         logger.info("Loading DeepSeek-OCR model (this may take a few minutes on first run)...")
 
         try:
-            # Load model with trust_remote_code for custom architecture
-            self._model = AutoModel.from_pretrained(
+            # Load vision-language model for causal LM (text generation)
+            self._model = AutoModelForCausalLM.from_pretrained(
                 "deepseek-ai/DeepSeek-OCR",
                 trust_remote_code=True,
                 torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
             )
 
-            self._processor = AutoTokenizer.from_pretrained(
+            # Load processor (handles both vision and text)
+            self._processor = AutoProcessor.from_pretrained(
                 "deepseek-ai/DeepSeek-OCR",
                 trust_remote_code=True
             )
@@ -259,26 +260,18 @@ class DeepSeekOCRConverter(BaseTextConverter):
             try:
                 import torch
 
-                # DeepSeek-OCR is a vision-language model that needs a text prompt
-                # Prepare the conversation with OCR prompt
-                conversation = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image"},
-                            {"type": "text", "text": "Extract all text from this image. Provide only the text content without any additional explanation or formatting."}
-                        ]
-                    }
-                ]
+                # DeepSeek-OCR is a vision-language model - prepare text prompt for OCR
+                prompt = "Extract all text from this image. Provide only the text content without any additional explanation or formatting."
 
-                # Process inputs with both image and text
-                inputs = self._processor.apply_chat_template(
-                    conversation,
-                    images=[image],
-                    add_generation_prompt=True,
+                # Process image and text together
+                inputs = self._processor(
+                    text=prompt,
+                    images=image,
                     return_tensors="pt"
                 )
-                inputs = {k: v.to(self.device) for k, v in inputs.items() if isinstance(v, torch.Tensor)}
+
+                # Move inputs to device
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
                 # Run inference
                 with torch.no_grad():
@@ -286,12 +279,12 @@ class DeepSeekOCRConverter(BaseTextConverter):
                         **inputs,
                         max_new_tokens=2048,  # Max tokens for OCR output
                         do_sample=False,      # Deterministic for OCR
-                        pad_token_id=self._processor.eos_token_id
+                        temperature=0.0,      # No randomness
                     )
 
                 # Decode output
                 # Remove the input tokens from output to get only the response
-                input_len = inputs['input_ids'].shape[1]
+                input_len = inputs['input_ids'].shape[1] if 'input_ids' in inputs else 0
                 generated_tokens = outputs[0][input_len:]
                 text = self._processor.decode(generated_tokens, skip_special_tokens=True)
 
