@@ -290,7 +290,7 @@ class DeepSeekOCRConverter(BaseTextConverter):
                             base_size=1024,    # Standard base size
                             image_size=640,    # Standard image size
                             crop_mode=True,    # Use crop mode for better results
-                            save_results=False, # Don't save intermediate files
+                            save_results=True,  # Save results to get return value
                             test_compress=False  # No compression testing needed
                         )
 
@@ -298,10 +298,24 @@ class DeepSeekOCRConverter(BaseTextConverter):
                         # The infer method returns a dict with at least a "text" key
                         if result and isinstance(result, dict):
                             text = result.get("text", "")
-                            return text.strip() if text and text.strip() else None
-                        else:
-                            logger.warning(f"Unexpected result type from infer(): {type(result)}")
-                            return None
+                            if text and text.strip():
+                                return text.strip()
+
+                        # If result is None or doesn't have text, try reading from saved files
+                        logger.info(f"Result type: {type(result)}, checking saved files in {tmp_output_dir}")
+
+                        # Try to read text from saved markdown file
+                        import os
+                        for filename in os.listdir(tmp_output_dir):
+                            if filename.endswith('.md'):
+                                md_path = os.path.join(tmp_output_dir, filename)
+                                with open(md_path, 'r', encoding='utf-8') as f:
+                                    text = f.read()
+                                    if text.strip():
+                                        return text.strip()
+
+                        logger.warning(f"No text extracted from infer result or saved files")
+                        return None
 
                     finally:
                         # Clean up temp image file
