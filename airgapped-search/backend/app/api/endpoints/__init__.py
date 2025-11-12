@@ -1,5 +1,5 @@
 """API endpoint modules."""
 
-from . import documents
+from . import auth, documents
 
-__all__ = ["documents"]
+__all__ = ["auth", "documents"]
