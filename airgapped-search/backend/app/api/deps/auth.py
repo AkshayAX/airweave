@@ -2,6 +2,7 @@
 
 from typing import Optional
 from uuid import UUID
+import logging
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -10,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import User
 from app.api.deps.database import get_db
+
+logger = logging.getLogger(__name__)
 
 # Security scheme for Swagger UI
 security = HTTPBearer()
@@ -36,7 +39,11 @@ async def get_current_user(
     """
     try:
         # Extract user_id from token (currently token IS the user_id)
-        user_id = UUID(credentials.credentials)
+        token = credentials.credentials
+        logger.info(f"Authenticating with token: {token[:8]}...")
+
+        user_id = UUID(token)
+        logger.debug(f"Parsed user_id: {user_id}")
 
         # Get user from database
         result = await db.execute(
@@ -45,18 +52,30 @@ async def get_current_user(
         user = result.scalar_one_or_none()
 
         if not user:
+            logger.warning(f"User not found for token: {token[:8]}...")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User not found or inactive",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        logger.info(f"User authenticated: {user.email} (admin={user.is_admin})")
         return user
 
-    except (ValueError, AttributeError) as e:
+    except ValueError as e:
+        logger.error(f"Invalid token format: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid authentication token: {str(e)}",
+            detail=f"Invalid token format: {str(e)}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Authentication error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Authentication failed: {str(e)}",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
