@@ -94,10 +94,16 @@ class DeepSeekOCRConverter(BaseTextConverter):
             )
 
             # Load model with custom infer() method
+            # Use bfloat16 for better stability on CUDA (avoids dtype mismatch), float32 on CPU
+            if self.device == "cuda":
+                dtype = torch.bfloat16
+            else:
+                dtype = torch.float32
+
             self._model = AutoModel.from_pretrained(
                 "deepseek-ai/DeepSeek-OCR",
                 trust_remote_code=True,
-                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
+                torch_dtype=dtype
             )
 
             # Move model to device
