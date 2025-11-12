@@ -267,6 +267,9 @@ class DeepSeekOCRConverter(BaseTextConverter):
                 import torch
                 import tempfile
                 import os
+                import sys
+                import io
+                import re
 
                 # DeepSeek-OCR's infer() method expects an image file path
                 # Save PIL image to temporary file
@@ -281,40 +284,62 @@ class DeepSeekOCRConverter(BaseTextConverter):
                         # Prompt for pure OCR without layout grounding
                         prompt = "<image>\n<|grounding|>OCR this image."
 
-                        # Call model's custom infer method
-                        result = self._model.infer(
-                            self._tokenizer,
-                            prompt=prompt,
-                            image_file=tmp_path,
-                            output_path=tmp_output_dir,  # Temporary directory for model's internal files
-                            base_size=1024,    # Standard base size
-                            image_size=640,    # Standard image size
-                            crop_mode=True,    # Use crop mode for better results
-                            save_results=True,  # Save results to get return value
-                            test_compress=False  # No compression testing needed
-                        )
+                        # Capture stdout since the model prints results there
+                        old_stdout = sys.stdout
+                        sys.stdout = captured_output = io.StringIO()
 
-                        # Extract text from result dictionary
-                        # The infer method returns a dict with at least a "text" key
+                        try:
+                            # Call model's custom infer method
+                            result = self._model.infer(
+                                self._tokenizer,
+                                prompt=prompt,
+                                image_file=tmp_path,
+                                output_path=tmp_output_dir,  # Temporary directory for model's internal files
+                                base_size=1024,    # Standard base size
+                                image_size=640,    # Standard image size
+                                crop_mode=True,    # Use crop mode for better results
+                                save_results=True,  # Save results to get return value
+                                test_compress=False  # No compression testing needed
+                            )
+                        finally:
+                            # Restore stdout
+                            sys.stdout = old_stdout
+                            stdout_text = captured_output.getvalue()
+
+                        # Method 1: Try to get text from return value
                         if result and isinstance(result, dict):
                             text = result.get("text", "")
                             if text and text.strip():
+                                logger.info("Extracted text from return value")
                                 return text.strip()
 
-                        # If result is None or doesn't have text, try reading from saved files
-                        logger.info(f"Result type: {type(result)}, checking saved files in {tmp_output_dir}")
-
-                        # Try to read text from saved markdown file
-                        import os
+                        # Method 2: Try reading from saved markdown files
                         for filename in os.listdir(tmp_output_dir):
                             if filename.endswith('.md'):
                                 md_path = os.path.join(tmp_output_dir, filename)
                                 with open(md_path, 'r', encoding='utf-8') as f:
                                     text = f.read()
                                     if text.strip():
+                                        logger.info(f"Extracted text from saved file: {filename}")
                                         return text.strip()
 
-                        logger.warning(f"No text extracted from infer result or saved files")
+                        # Method 3: Extract text from captured stdout
+                        if stdout_text:
+                            # Remove special tokens like <|ref|>, <|/ref|>, <|det|>, <|/det|>
+                            # Extract text between <|ref|> and <|/ref|> tags
+                            text_parts = re.findall(r'<\|ref\|>(.*?)<\|/ref\|>', stdout_text, re.DOTALL)
+                            if text_parts:
+                                # Join all text parts and clean up
+                                extracted_text = '\n'.join(text_parts)
+                                # Remove remaining special tokens
+                                extracted_text = re.sub(r'<\|[^|]+\|>', '', extracted_text)
+                                # Clean up whitespace
+                                extracted_text = ' '.join(extracted_text.split())
+                                if extracted_text.strip():
+                                    logger.info("Extracted text from captured stdout")
+                                    return extracted_text.strip()
+
+                        logger.warning(f"No text extracted. Result type: {type(result)}, stdout length: {len(stdout_text)}")
                         return None
 
                     finally:
