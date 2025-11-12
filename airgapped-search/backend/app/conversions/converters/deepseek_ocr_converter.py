@@ -259,24 +259,46 @@ class DeepSeekOCRConverter(BaseTextConverter):
             try:
                 import torch
 
-                # Prepare image for model
-                # Note: DeepSeek-OCR specific preprocessing
-                # This is a placeholder - actual implementation depends on model API
-                inputs = self._processor(images=image, return_tensors="pt")
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                # DeepSeek-OCR is a vision-language model that needs a text prompt
+                # Prepare the conversation with OCR prompt
+                conversation = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image"},
+                            {"type": "text", "text": "Extract all text from this image. Provide only the text content without any additional explanation or formatting."}
+                        ]
+                    }
+                ]
+
+                # Process inputs with both image and text
+                inputs = self._processor.apply_chat_template(
+                    conversation,
+                    images=[image],
+                    add_generation_prompt=True,
+                    return_tensors="pt"
+                )
+                inputs = {k: v.to(self.device) for k, v in inputs.items() if isinstance(v, torch.Tensor)}
 
                 # Run inference
                 with torch.no_grad():
-                    outputs = self._model(**inputs)
+                    outputs = self._model.generate(
+                        **inputs,
+                        max_new_tokens=2048,  # Max tokens for OCR output
+                        do_sample=False,      # Deterministic for OCR
+                        pad_token_id=self._processor.eos_token_id
+                    )
 
                 # Decode output
-                # Note: Actual decoding depends on DeepSeek-OCR model API
-                text = self._processor.batch_decode(outputs, skip_special_tokens=True)[0]
+                # Remove the input tokens from output to get only the response
+                input_len = inputs['input_ids'].shape[1]
+                generated_tokens = outputs[0][input_len:]
+                text = self._processor.decode(generated_tokens, skip_special_tokens=True)
 
                 return text.strip() if text else None
 
             except Exception as e:
-                logger.error(f"OCR inference failed for {name}: {e}")
+                logger.error(f"OCR inference failed for {name}: {e}", exc_info=True)
                 return None
 
         try:
