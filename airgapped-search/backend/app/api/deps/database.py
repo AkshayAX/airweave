@@ -4,7 +4,7 @@ from typing import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.session import async_session_maker
+from app.database.base import AsyncSessionLocal
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -19,7 +19,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             result = await db.execute(select(User))
             return result.scalars().all()
     """
-    async with async_session_maker() as session:
+    async with AsyncSessionLocal() as session:
         try:
             yield session
             await session.commit()
