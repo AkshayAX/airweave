@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_in_production}
       POSTGRES_DB: ${POSTGRES_DB:-airgapped_search}
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -58,17 +58,18 @@ services:
         condition: service_healthy
     command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: airgapped-frontend
-    environment:
-      VITE_API_URL: http://localhost:8001
-    ports:
-      - "8080:80"
-    depends_on:
-      - backend
+  # Frontend service - not yet implemented
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   container_name: airgapped-frontend
+  #   environment:
+  #     VITE_API_URL: http://localhost:8001
+  #   ports:
+  #     - "8080:80"
+  #   depends_on:
+  #     - backend
 
 volumes:
   postgres_data:
