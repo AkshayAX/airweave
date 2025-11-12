@@ -30,14 +30,19 @@ tiktoken>=0.5.0  # OpenAI tokenizer for accurate token counting
 markitdown>=0.0.1a3
 
 # OCR & Image Processing (DeepSeek-OCR for scanned documents)
-transformers>=4.40.0
-torch>=2.0.0
-torchvision>=0.15.0  # Required by DeepSeek-OCR
+# DeepSeek-OCR official requirements (tested on Python 3.12.9 + CUDA 11.8)
+transformers==4.46.3
+tokenizers==0.20.3
+torch>=2.6.0
+torchvision>=0.21.0
+torchaudio>=2.6.0
+einops>=0.6.0  # Required by DeepSeek-OCR
+addict>=2.4.0  # Required by DeepSeek-OCR (dict with attribute access)
+easydict>=1.10  # Required by DeepSeek-OCR (alternative dict library)
+# flash-attn==2.7.3  # Optional - improves inference speed but requires compilation
 pdf2image>=1.16.0  # PDF to image conversion
 pillow>=11.0.0
-addict>=2.4.0  # Required by DeepSeek-OCR
-matplotlib>=3.7.0  # Required by DeepSeek-OCR
-# Note: For GPU support, ensure CUDA toolkit is installed on your system
+# Note: For GPU support, ensure CUDA toolkit 11.8+ is installed on your system
 # PyTorch will automatically use CUDA if available
 
 # Utilities
