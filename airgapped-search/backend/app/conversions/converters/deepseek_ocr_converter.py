@@ -44,7 +44,7 @@ class DeepSeekOCRConverter(BaseTextConverter):
         self.device = self._get_device(device)
         self.batch_size = batch_size
         self._model = None
-        self._processor = None
+        self._tokenizer = None
         self._initialized = False
 
         logger.info(f"DeepSeek-OCR initialized with device: {self.device}")
@@ -76,7 +76,7 @@ class DeepSeekOCRConverter(BaseTextConverter):
             return
 
         try:
-            from transformers import AutoModelForVision2Seq, AutoProcessor
+            from transformers import AutoModel, AutoTokenizer
             import torch
         except ImportError:
             raise Exception(
@@ -87,14 +87,14 @@ class DeepSeekOCRConverter(BaseTextConverter):
         logger.info("Loading DeepSeek-OCR model (this may take a few minutes on first run)...")
 
         try:
-            # Load processor first (handles image preprocessing)
-            self._processor = AutoProcessor.from_pretrained(
+            # Load tokenizer (used by model.infer() method)
+            self._tokenizer = AutoTokenizer.from_pretrained(
                 "deepseek-ai/DeepSeek-OCR",
                 trust_remote_code=True
             )
 
-            # Load vision-to-sequence model (correct model class for DeepSeek-OCR)
-            self._model = AutoModelForVision2Seq.from_pretrained(
+            # Load model with custom infer() method
+            self._model = AutoModel.from_pretrained(
                 "deepseek-ai/DeepSeek-OCR",
                 trust_remote_code=True,
                 torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
@@ -259,24 +259,45 @@ class DeepSeekOCRConverter(BaseTextConverter):
         def _run_ocr():
             try:
                 import torch
+                import tempfile
+                import os
 
-                # Process image (DeepSeek-OCR processes images directly for OCR)
-                inputs = self._processor(
-                    images=image,
-                    return_tensors="pt"
-                ).to(self.device)
+                # DeepSeek-OCR's infer() method expects an image file path
+                # Save PIL image to temporary file
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_file:
+                    tmp_path = tmp_file.name
+                    image.save(tmp_path, format='PNG')
 
-                # Run inference
-                with torch.no_grad():
-                    outputs = self._model.generate(
-                        **inputs,
-                        max_new_tokens=4096,  # Max tokens for OCR output
+                try:
+                    # Use DeepSeek-OCR's custom infer() method
+                    # Prompt for pure OCR without layout grounding
+                    prompt = "<image>\n<|grounding|>OCR this image."
+
+                    # Call model's custom infer method
+                    result = self._model.infer(
+                        self._tokenizer,
+                        prompt=prompt,
+                        image_file=tmp_path,
+                        output_path=None,  # We don't need to save output files
+                        base_size=1024,    # Standard base size
+                        image_size=640,    # Standard image size
+                        crop_mode=True,    # Use crop mode for better results
+                        save_results=False, # Don't save intermediate files
+                        test_compress=False  # No compression testing needed
                     )
 
-                # Decode output text
-                text = self._processor.decode(outputs[0], skip_special_tokens=True)
+                    # Extract text from result
+                    # The infer method returns text output
+                    if result and isinstance(result, str):
+                        return result.strip() if result.strip() else None
+                    else:
+                        logger.warning(f"Unexpected result type from infer(): {type(result)}")
+                        return None
 
-                return text.strip() if text else None
+                finally:
+                    # Clean up temp file
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
 
             except Exception as e:
                 logger.error(f"OCR inference failed for {name}: {e}", exc_info=True)
