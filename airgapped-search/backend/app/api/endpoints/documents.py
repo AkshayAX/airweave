@@ -165,7 +165,7 @@ async def upload_document(
         DocumentUploadResponse with document ID and status
     """
     logger.info(
-        f"Document upload started: {file.filename} by user {current_user.id}"
+        f"📁 UPLOAD ENDPOINT REACHED - Document upload started: {file.filename} by user {current_user.email} (ID: {current_user.id})"
     )
 
     # Validate file

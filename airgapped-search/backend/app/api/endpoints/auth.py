@@ -159,7 +159,7 @@ async def login(
 
 @router.get("/me")
 async def get_current_user_info(
-    current_user: User = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Get current authenticated user information.
 
@@ -175,4 +175,21 @@ async def get_current_user_info(
         "full_name": current_user.full_name,
         "is_admin": current_user.is_admin,
         "is_active": current_user.is_active,
+    }
+
+
+@router.get("/test-auth")
+async def test_authentication(
+    current_user: User = Depends(get_current_user),
+):
+    """Test endpoint to verify authentication is working.
+
+    Returns:
+        Success message with user info
+    """
+    return {
+        "message": "Authentication successful!",
+        "user_id": str(current_user.id),
+        "email": current_user.email,
+        "is_admin": current_user.is_admin,
     }
