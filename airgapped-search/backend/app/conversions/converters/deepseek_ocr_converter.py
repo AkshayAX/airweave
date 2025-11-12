@@ -76,7 +76,7 @@ class DeepSeekOCRConverter(BaseTextConverter):
             return
 
         try:
-            from transformers import AutoModel, AutoProcessor
+            from transformers import AutoModelForVision2Seq, AutoProcessor
             import torch
         except ImportError:
             raise Exception(
@@ -87,17 +87,17 @@ class DeepSeekOCRConverter(BaseTextConverter):
         logger.info("Loading DeepSeek-OCR model (this may take a few minutes on first run)...")
 
         try:
-            # Load vision-language model (AutoModel handles custom model types with trust_remote_code)
-            self._model = AutoModel.from_pretrained(
-                "deepseek-ai/DeepSeek-OCR",
-                trust_remote_code=True,
-                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
-            )
-
-            # Load processor (handles both vision and text)
+            # Load processor first (handles image preprocessing)
             self._processor = AutoProcessor.from_pretrained(
                 "deepseek-ai/DeepSeek-OCR",
                 trust_remote_code=True
+            )
+
+            # Load vision-to-sequence model (correct model class for DeepSeek-OCR)
+            self._model = AutoModelForVision2Seq.from_pretrained(
+                "deepseek-ai/DeepSeek-OCR",
+                trust_remote_code=True,
+                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
             )
 
             # Move model to device
@@ -260,33 +260,21 @@ class DeepSeekOCRConverter(BaseTextConverter):
             try:
                 import torch
 
-                # DeepSeek-OCR is a vision-language model - prepare text prompt for OCR
-                prompt = "Extract all text from this image. Provide only the text content without any additional explanation or formatting."
-
-                # Process image and text together
+                # Process image (DeepSeek-OCR processes images directly for OCR)
                 inputs = self._processor(
-                    text=prompt,
                     images=image,
                     return_tensors="pt"
-                )
-
-                # Move inputs to device
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                ).to(self.device)
 
                 # Run inference
                 with torch.no_grad():
                     outputs = self._model.generate(
                         **inputs,
-                        max_new_tokens=2048,  # Max tokens for OCR output
-                        do_sample=False,      # Deterministic for OCR
-                        temperature=0.0,      # No randomness
+                        max_new_tokens=4096,  # Max tokens for OCR output
                     )
 
-                # Decode output
-                # Remove the input tokens from output to get only the response
-                input_len = inputs['input_ids'].shape[1] if 'input_ids' in inputs else 0
-                generated_tokens = outputs[0][input_len:]
-                text = self._processor.decode(generated_tokens, skip_special_tokens=True)
+                # Decode output text
+                text = self._processor.decode(outputs[0], skip_special_tokens=True)
 
                 return text.strip() if text else None
 
