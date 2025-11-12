@@ -107,7 +107,7 @@ class QdrantService:
         limit: int = 10,
         score_threshold: Optional[float] = None,
         document_filter: Optional[UUID] = None,
-        user_id: Optional[UUID] = None,
+        user_email: Optional[str] = None,
         user_domains: Optional[List[str]] = None,
     ) -> List[Dict]:
         """Search for similar vectors in the collection.
@@ -117,7 +117,7 @@ class QdrantService:
             limit: Maximum number of results
             score_threshold: Minimum similarity score (0.0 to 1.0)
             document_filter: Optional document UUID to filter by
-            user_id: User ID for access control filtering
+            user_email: User email for access control filtering
             user_domains: List of domains user has access to
 
         Returns:
@@ -149,11 +149,11 @@ class QdrantService:
         )
 
         # 2. Private documents - only owner
-        if user_id:
+        if user_email:
             access_conditions.append(
                 FieldCondition(
-                    key="owner_id",
-                    match=MatchValue(value=str(user_id)),
+                    key="owner_email",
+                    match=MatchValue(value=user_email),
                 )
             )
 
@@ -186,7 +186,7 @@ class QdrantService:
         logger.debug(
             f"Searching {collection_name}: limit={limit}, "
             f"threshold={score_threshold}, document_filter={document_filter}, "
-            f"user_id={user_id}, user_domains={user_domains}"
+            f"user_email={user_email}, user_domains={user_domains}"
         )
 
         # Perform search

@@ -132,7 +132,7 @@ class VectorStore:
         limit: int = 10,
         score_threshold: Optional[float] = None,
         document_filter: Optional[UUID] = None,
-        user_id: Optional[UUID] = None,
+        user_email: Optional[str] = None,
         user_domains: Optional[List[str]] = None,
     ) -> List[Dict]:
         """Search for documents using semantic search with access control.
@@ -142,7 +142,7 @@ class VectorStore:
             limit: Maximum number of results
             score_threshold: Minimum similarity score (0-1)
             document_filter: Optional document UUID to filter by
-            user_id: User ID for access control filtering
+            user_email: User email for access control filtering
             user_domains: List of domains user has access to
 
         Returns:
@@ -151,7 +151,7 @@ class VectorStore:
         if not query or not query.strip():
             raise ValueError("Query cannot be empty")
 
-        logger.info(f"Searching for: '{query[:50]}...' (user_id={user_id}, domains={user_domains})")
+        logger.info(f"Searching for: '{query[:50]}...' (user_email={user_email}, domains={user_domains})")
 
         # Step 1: Generate query embedding
         logger.debug("Generating query embedding...")
@@ -164,7 +164,7 @@ class VectorStore:
             limit=limit,
             score_threshold=score_threshold,
             document_filter=document_filter,
-            user_id=user_id,
+            user_email=user_email,
             user_domains=user_domains,
         )
 

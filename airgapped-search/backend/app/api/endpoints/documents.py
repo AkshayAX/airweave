@@ -12,8 +12,8 @@ from sqlalchemy import select, or_, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 
-from app.database.models import Document, User
-from app.api.deps import get_db, get_current_user, require_admin
+from app.database.models import Document
+from app.api.deps import get_db
 from app.conversions.converter_factory import ConverterFactory
 from app.search.vector_store import VectorStore
 
@@ -62,6 +62,7 @@ class SearchRequest(BaseModel):
     score_threshold: Optional[float] = Field(
         None, ge=0.0, le=1.0, description="Minimum similarity score"
     )
+    user_email: str = Field(..., description="Email of user searching (from external auth)")
     user_domains: Optional[List[str]] = Field(
         None, description="List of domains user has access to (e.g., ['finance', 'legal'])"
     )
@@ -149,7 +150,7 @@ async def upload_document(
     file: UploadFile = File(...),
     access_type: str = Form(..., description="Access type: private, domain, or public"),
     access_domains: Optional[str] = Form(None, description="Comma-separated domains (e.g., 'finance,legal') for domain access type"),
-    current_user: User = Depends(get_current_user),
+    user_email: str = Form(..., description="Email of user uploading document (from external auth)"),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload and process a document for search.
@@ -166,18 +167,20 @@ async def upload_document(
     - domain: Users with matching domains can access (for news/reports)
     - public: All authenticated users can access
 
+    Note: No authentication here - user info comes from external Microsoft OAuth
+
     Args:
         file: Uploaded file
         access_type: Access type (private/domain/public)
         access_domains: Comma-separated domain list for domain-based access
-        current_user: Authenticated user
+        user_email: Email of user uploading (from external auth)
         db: Database session
 
     Returns:
         DocumentUploadResponse with document ID and status
     """
     logger.info(
-        f"📁 UPLOAD ENDPOINT REACHED - Document upload started: {file.filename} by user {current_user.email} (ID: {current_user.id})"
+        f"📁 UPLOAD ENDPOINT REACHED - Document upload started: {file.filename} by user {user_email}"
     )
 
     # Validate file
@@ -219,12 +222,12 @@ async def upload_document(
         filename=file.filename,
         file_type=file_type,
         status="processing",
-        uploaded_by=current_user.id,
+        uploaded_by_email=user_email,
         access_type=access_type,
-        owner_id=current_user.id if access_type == "private" else None,
+        owner_email=user_email if access_type == "private" else None,
         access_domains=domains_list,
     )
-    logger.info(f"Document access: type={access_type}, owner={document.owner_id}, domains={domains_list}")
+    logger.info(f"Document access: type={access_type}, owner={document.owner_email}, domains={domains_list}")
     db.add(document)
     await db.flush()  # Get document ID
     await db.commit()
@@ -269,7 +272,7 @@ async def upload_document(
                 "filename": file.filename,
                 "file_type": file_type,
                 "access_type": document.access_type,
-                "owner_id": str(document.owner_id) if document.owner_id else None,
+                "owner_email": document.owner_email,
                 "access_domains": document.access_domains or [],
             },
         )
@@ -318,8 +321,8 @@ async def upload_document(
 async def list_documents(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
+    user_email: str = Query(..., description="Email of user requesting list (from external auth)"),
     user_domains: Optional[str] = Query(None, description="Comma-separated domains user has access to"),
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List documents accessible to the user based on access control.
@@ -329,11 +332,13 @@ async def list_documents(
     - Private documents: Only owner can see
     - Domain documents: Only users with matching domains can see
 
+    Note: No authentication here - user info comes from external Microsoft OAuth
+
     Args:
         skip: Number of documents to skip (pagination)
         limit: Maximum number of documents to return
+        user_email: Email of user requesting list (from external auth)
         user_domains: Comma-separated domains user has access to
-        current_user: Authenticated user
         db: Database session
 
     Returns:
@@ -344,7 +349,7 @@ async def list_documents(
     if user_domains:
         domains_list = [d.strip() for d in user_domains.split(",") if d.strip()]
 
-    logger.info(f"Listing documents for user {current_user.email} with domains: {domains_list}")
+    logger.info(f"Listing documents for user {user_email} with domains: {domains_list}")
 
     # Build access control filter
     access_filters = [
@@ -353,7 +358,7 @@ async def list_documents(
         # 2. Private documents owned by user
         and_(
             Document.access_type == "private",
-            Document.owner_id == current_user.id
+            Document.owner_email == user_email
         ),
     ]
 
@@ -442,18 +447,29 @@ async def get_document(
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(
     document_id: UUID,
-    current_user: User = Depends(require_admin),
+    user_email: str = Query(..., description="Email of user deleting document (from external auth)"),
+    is_admin: bool = Query(..., description="Whether user is admin (from external auth)"),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a document and its vectors.
 
-    Requires admin access.
+    Requires admin access (verified via external auth).
+
+    Note: No authentication here - user info comes from external Microsoft OAuth
 
     Args:
         document_id: Document UUID
-        current_user: Authenticated admin user
+        user_email: Email of user deleting document
+        is_admin: Whether user is admin (from external auth)
         db: Database session
     """
+    # Verify admin access
+    if not is_admin:
+        logger.warning(f"Non-admin user {user_email} attempted to delete document {document_id}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required to delete documents"
+        )
     # Get document
     result = await db.execute(
         select(Document).where(Document.id == document_id)
@@ -479,13 +495,12 @@ async def delete_document(
     await db.delete(document)
     await db.commit()
 
-    logger.info(f"Document deleted: {document_id}")
+    logger.info(f"Document deleted: {document_id} by admin {user_email}")
 
 
 @router.post("/search", response_model=SearchResponse)
 async def search_documents(
     search_request: SearchRequest,
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Search documents using semantic search with access control.
@@ -495,16 +510,17 @@ async def search_documents(
     - Private documents: Only owner can see
     - Domain documents: Only users with matching domains can see
 
+    Note: No authentication here - user info comes from external Microsoft OAuth
+
     Args:
-        search_request: Search parameters including user_domains
-        current_user: Authenticated user
+        search_request: Search parameters including user_email and user_domains
         db: Database session
 
     Returns:
         SearchResponse with matching document chunks (filtered by access)
     """
     logger.info(
-        f"Search request: '{search_request.query[:50]}...' by user {current_user.email} "
+        f"Search request: '{search_request.query[:50]}...' by user {search_request.user_email} "
         f"(domains: {search_request.user_domains})"
     )
 
@@ -514,7 +530,7 @@ async def search_documents(
         query=search_request.query,
         limit=search_request.limit,
         score_threshold=search_request.score_threshold,
-        user_id=current_user.id,
+        user_email=search_request.user_email,
         user_domains=search_request.user_domains or [],
     )
 

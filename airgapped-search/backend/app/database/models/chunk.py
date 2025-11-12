@@ -37,8 +37,9 @@ class Chunk(Base):
     char_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
     # Access Control (denormalized from document for efficient filtering)
+    # No foreign keys - accepts info from external auth
     access_type: Mapped[str] = mapped_column(String, default="private", nullable=False)
-    owner_id: Mapped[UUID | None] = mapped_column(ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    owner_email: Mapped[str | None] = mapped_column(String, nullable=True)
     access_domains: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     # Relationships

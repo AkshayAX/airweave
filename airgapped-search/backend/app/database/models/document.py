@@ -2,9 +2,8 @@
 
 from datetime import datetime
 from typing import TYPE_CHECKING, List
-from uuid import UUID
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text
+from sqlalchemy import BigInteger, DateTime, String, Text
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -28,11 +27,8 @@ class Document(Base):
     # Content
     content: Mapped[str | None] = mapped_column(Text, nullable=True)  # Extracted text
 
-    # Upload tracking
-    uploaded_by: Mapped[UUID] = mapped_column(
-        ForeignKey("user.id", ondelete="SET NULL"),
-        nullable=True
-    )
+    # Upload tracking (no foreign key - accepts email from external auth)
+    uploaded_by_email: Mapped[str | None] = mapped_column(String, nullable=True)
     upload_date: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
     # Processing status
@@ -43,16 +39,16 @@ class Document(Base):
     )  # pending, processing, completed, failed
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Access Control
+    # Access Control (no foreign keys - accepts info from external auth)
     access_type: Mapped[str] = mapped_column(
         String,
         default="private",
         nullable=False
     )  # private, domain, public
-    owner_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("user.id", ondelete="SET NULL"),
+    owner_email: Mapped[str | None] = mapped_column(
+        String,
         nullable=True
-    )  # For private documents (emails)
+    )  # For private documents (emails) - email of the owner
     access_domains: Mapped[list | None] = mapped_column(
         JSON,
         nullable=True
