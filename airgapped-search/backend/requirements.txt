@@ -32,8 +32,11 @@ markitdown>=0.0.1a3
 # OCR & Image Processing (DeepSeek-OCR for scanned documents)
 transformers>=4.40.0
 torch>=2.0.0
+torchvision>=0.15.0  # Required by DeepSeek-OCR
 pdf2image>=1.16.0  # PDF to image conversion
 pillow>=11.0.0
+addict>=2.4.0  # Required by DeepSeek-OCR
+matplotlib>=3.7.0  # Required by DeepSeek-OCR
 # Note: For GPU support, ensure CUDA toolkit is installed on your system
 # PyTorch will automatically use CUDA if available
 
