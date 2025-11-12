@@ -29,7 +29,7 @@ class SemanticChunker(BaseChunker):
     OVERLAP_TOKENS = 128  # Token overlap between chunks
 
     # SemanticChunker configuration
-    EMBEDDING_MODEL = "minishlab/potion-base-128M"  # Model2Vec (fast, local, included with chonkie)
+    EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"  # Same model as vector search for consistency
     SIMILARITY_THRESHOLD = 0.3  # 0-1: Lower=larger chunks, Higher=smaller chunks
     SIMILARITY_WINDOW = 10  # Number of sentences to compare
     MIN_SENTENCES_PER_CHUNK = 1
