@@ -87,10 +87,16 @@ class DeepSeekOCRConverter(BaseTextConverter):
         logger.info("Loading DeepSeek-OCR model (this may take a few minutes on first run)...")
 
         try:
+            import os
+
+            # Explicitly set cache directory to ensure persistence across restarts
+            cache_dir = os.environ.get('HF_HOME', '/root/.cache/huggingface')
+
             # Load tokenizer (used by model.infer() method)
             self._tokenizer = AutoTokenizer.from_pretrained(
                 "deepseek-ai/DeepSeek-OCR",
-                trust_remote_code=True
+                trust_remote_code=True,
+                cache_dir=cache_dir
             )
 
             # Load model with custom infer() method
@@ -103,7 +109,8 @@ class DeepSeekOCRConverter(BaseTextConverter):
             self._model = AutoModel.from_pretrained(
                 "deepseek-ai/DeepSeek-OCR",
                 trust_remote_code=True,
-                torch_dtype=dtype
+                torch_dtype=dtype,
+                cache_dir=cache_dir
             )
 
             # Move model to device
