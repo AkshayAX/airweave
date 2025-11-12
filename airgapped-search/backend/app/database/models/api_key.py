@@ -11,7 +11,6 @@ from app.database.base import Base
 
 if TYPE_CHECKING:
     from app.database.models.user import User
-    from app.database.models.organization import Organization
 
 
 class APIKey(Base):
@@ -30,10 +29,6 @@ class APIKey(Base):
         ForeignKey("user.id", ondelete="CASCADE"),
         nullable=False
     )
-    organization_id: Mapped[UUID] = mapped_column(
-        ForeignKey("organization.id", ondelete="CASCADE"),
-        nullable=False
-    )
 
     # Status
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -42,4 +37,3 @@ class APIKey(Base):
 
     # Relationships
     user: Mapped["User"] = relationship("User", lazy="noload")
-    organization: Mapped["Organization"] = relationship("Organization", lazy="noload")
