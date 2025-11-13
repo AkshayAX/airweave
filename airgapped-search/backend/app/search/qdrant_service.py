@@ -1,6 +1,7 @@
 """Qdrant vector database service for managing collections and search.
 
-Handles connection, collection management, and vector operations with a single collection.
+Handles connection, collection management, and vector operations with hybrid search support.
+Supports both dense vectors (semantic) and sparse vectors (keyword/BM25-like).
 """
 
 from typing import Dict, List, Optional
@@ -11,12 +12,19 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
     VectorParams,
+    SparseVectorParams,
+    SparseIndexParams,
     PointStruct,
     Filter,
     FieldCondition,
     MatchValue,
     MatchAny,
     SearchRequest,
+    NamedVector,
+    NamedSparseVector,
+    Prefetch,
+    Query,
+    FusionQuery,
 )
 
 from app.core.config import settings
@@ -43,9 +51,11 @@ class QdrantService:
         logger.info(f"Qdrant client initialized: {settings.QDRANT_HOST}:{settings.QDRANT_PORT}")
 
     async def ensure_collection_exists(self) -> str:
-        """Ensure the documents collection exists.
+        """Ensure the documents collection exists with hybrid search support.
 
-        Creates the collection if it doesn't exist.
+        Creates the collection if it doesn't exist with both dense and sparse vectors.
+        Dense vectors: semantic search (BAAI/bge-small-en-v1.5)
+        Sparse vectors: keyword search (SPLADE)
 
         Returns:
             Collection name
@@ -57,15 +67,22 @@ class QdrantService:
         exists = any(c.name == collection_name for c in collections)
 
         if not exists:
-            logger.info(f"Creating collection: {collection_name}")
+            logger.info(f"Creating hybrid search collection: {collection_name}")
             self.client.create_collection(
                 collection_name=collection_name,
-                vectors_config=VectorParams(
-                    size=self.embedding_dimension,
-                    distance=Distance.COSINE,
-                ),
+                vectors_config={
+                    # Dense vectors for semantic search
+                    "dense": VectorParams(
+                        size=self.embedding_dimension,
+                        distance=Distance.COSINE,
+                    ),
+                    # Sparse vectors for keyword search (SPLADE)
+                    "sparse": SparseVectorParams(
+                        index=SparseIndexParams(),
+                    ),
+                },
             )
-            logger.info(f"✓ Collection created: {collection_name}")
+            logger.info(f"✓ Hybrid search collection created: {collection_name}")
         else:
             logger.debug(f"Collection already exists: {collection_name}")
 
@@ -73,27 +90,44 @@ class QdrantService:
 
     async def upsert_vectors(
         self,
-        points: List[PointStruct],
+        points: List[Dict],
     ) -> Dict:
-        """Insert or update vectors in the collection.
+        """Insert or update vectors in the collection with hybrid search support.
 
         Args:
-            points: List of PointStruct objects with vectors and payloads
+            points: List of dicts with:
+                - id: Point ID
+                - dense_vector: Dense embedding vector
+                - sparse_vector: Sparse embedding dict with 'indices' and 'values'
+                - payload: Metadata payload
 
         Returns:
             Dictionary with operation status
         """
         collection_name = await self.ensure_collection_exists()
 
-        logger.debug(f"Upserting {len(points)} points to {collection_name}")
+        logger.debug(f"Upserting {len(points)} hybrid points to {collection_name}")
+
+        # Convert to Qdrant PointStruct format with named vectors
+        qdrant_points = []
+        for point in points:
+            qdrant_point = PointStruct(
+                id=point["id"],
+                vector={
+                    "dense": point["dense_vector"],
+                    "sparse": point["sparse_vector"],
+                },
+                payload=point["payload"],
+            )
+            qdrant_points.append(qdrant_point)
 
         # Upsert points
         result = self.client.upsert(
             collection_name=collection_name,
-            points=points,
+            points=qdrant_points,
         )
 
-        logger.info(f"✓ Upserted {len(points)} vectors to {collection_name}")
+        logger.info(f"✓ Upserted {len(points)} hybrid vectors to {collection_name}")
 
         return {
             "collection": collection_name,
@@ -103,20 +137,26 @@ class QdrantService:
 
     async def search_vectors(
         self,
-        query_vector: List[float],
+        query_vector: Optional[List[float]] = None,
+        sparse_query_vector: Optional[Dict] = None,
+        search_type: str = "semantic",  # semantic, keyword, or hybrid
         limit: int = 10,
         score_threshold: Optional[float] = None,
         document_filter: Optional[UUID] = None,
+        metadata_filters: Optional[Dict[str, any]] = None,
         user_email: Optional[str] = None,
         user_domains: Optional[List[str]] = None,
     ) -> List[Dict]:
-        """Search for similar vectors in the collection.
+        """Search for similar vectors in the collection with hybrid search support.
 
         Args:
-            query_vector: Query embedding vector
+            query_vector: Dense query embedding vector (for semantic search)
+            sparse_query_vector: Sparse query embedding (for keyword search)
+            search_type: Type of search - "semantic", "keyword", or "hybrid"
             limit: Maximum number of results
             score_threshold: Minimum similarity score (0.0 to 1.0)
             document_filter: Optional document UUID to filter by
+            metadata_filters: Optional dict of metadata field->value pairs to filter by (e.g., {"file_type": "pdf"})
             user_email: User email for access control filtering
             user_domains: List of domains user has access to
 
@@ -125,7 +165,7 @@ class QdrantService:
         """
         collection_name = self.COLLECTION_NAME
 
-        # Build access control filter
+        # Build filters
         filter_conditions = []
 
         # Add document ID filter if provided
@@ -136,6 +176,16 @@ class QdrantService:
                     match=MatchValue(value=str(document_filter)),
                 )
             )
+
+        # Add metadata filters if provided
+        if metadata_filters:
+            for field, value in metadata_filters.items():
+                filter_conditions.append(
+                    FieldCondition(
+                        key=field,
+                        match=MatchValue(value=value),
+                    )
+                )
 
         # Build access control filter (OR conditions)
         access_conditions = []
@@ -184,19 +234,78 @@ class QdrantService:
             query_filter = Filter(must=filter_conditions)
 
         logger.debug(
-            f"Searching {collection_name}: limit={limit}, "
+            f"Searching {collection_name}: type={search_type}, limit={limit}, "
             f"threshold={score_threshold}, document_filter={document_filter}, "
-            f"user_email={user_email}, user_domains={user_domains}"
+            f"metadata_filters={metadata_filters}, user_email={user_email}, user_domains={user_domains}"
         )
 
-        # Perform search
-        search_result = self.client.search(
-            collection_name=collection_name,
-            query_vector=query_vector,
-            limit=limit,
-            score_threshold=score_threshold,
-            query_filter=query_filter,
-        )
+        # Perform search based on search_type
+        if search_type == "semantic":
+            # Dense vector search only (semantic/embedding-based)
+            if not query_vector:
+                raise ValueError("query_vector required for semantic search")
+
+            logger.debug("Performing semantic search with dense vectors")
+            search_result = self.client.search(
+                collection_name=collection_name,
+                query_vector=NamedVector(name="dense", vector=query_vector),
+                limit=limit,
+                score_threshold=score_threshold,
+                query_filter=query_filter,
+            )
+
+        elif search_type == "keyword":
+            # Sparse vector search only (keyword/BM25-like)
+            if not sparse_query_vector:
+                raise ValueError("sparse_query_vector required for keyword search")
+
+            logger.debug("Performing keyword search with sparse vectors")
+            search_result = self.client.search(
+                collection_name=collection_name,
+                query_vector=NamedSparseVector(
+                    name="sparse",
+                    vector=sparse_query_vector
+                ),
+                limit=limit,
+                score_threshold=score_threshold,
+                query_filter=query_filter,
+            )
+
+        elif search_type == "hybrid":
+            # Hybrid search: combine dense (semantic) and sparse (keyword)
+            if not query_vector or not sparse_query_vector:
+                raise ValueError("Both query_vector and sparse_query_vector required for hybrid search")
+
+            logger.debug("Performing hybrid search with dense + sparse vectors")
+            # Use query API with Reciprocal Rank Fusion (RRF)
+            query_result = self.client.query_points(
+                collection_name=collection_name,
+                query=FusionQuery(fusion="rrf"),  # Reciprocal Rank Fusion
+                prefetch=[
+                    # Prefetch from dense vectors (semantic)
+                    Prefetch(
+                        query=query_vector,
+                        using="dense",
+                        limit=limit * 2,  # Get more results for better fusion
+                        query_filter=query_filter,
+                    ),
+                    # Prefetch from sparse vectors (keyword)
+                    Prefetch(
+                        query=sparse_query_vector,
+                        using="sparse",
+                        limit=limit * 2,
+                        query_filter=query_filter,
+                    ),
+                ],
+                limit=limit,
+                score_threshold=score_threshold,
+            )
+
+            # Extract points from query result
+            search_result = query_result.points if hasattr(query_result, 'points') else query_result
+
+        else:
+            raise ValueError(f"Invalid search_type: {search_type}. Must be 'semantic', 'keyword', or 'hybrid'")
 
         # Format results
         results = [
@@ -208,7 +317,7 @@ class QdrantService:
             for hit in search_result
         ]
 
-        logger.info(f"Search returned {len(results)} results")
+        logger.info(f"Search returned {len(results)} results (type={search_type})")
 
         return results
 

@@ -55,12 +55,19 @@ class DocumentListResponse(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    """Request model for document search."""
+    """Request model for document search with hybrid search and filtering."""
 
     query: str = Field(..., min_length=1, description="Search query")
+    search_type: str = Field(
+        "hybrid",
+        description="Type of search: 'semantic' (embedding-based), 'keyword' (BM25-like), or 'hybrid' (both)",
+    )
     limit: int = Field(10, ge=1, le=100, description="Maximum number of results")
     score_threshold: Optional[float] = Field(
         None, ge=0.0, le=1.0, description="Minimum similarity score"
+    )
+    metadata_filters: Optional[dict] = Field(
+        None, description="Metadata filters as key-value pairs (e.g., {'file_type': 'pdf'})"
     )
     user_email: str = Field(..., description="Email of user searching (from external auth)")
     user_domains: Optional[List[str]] = Field(
@@ -543,33 +550,52 @@ async def search_documents(
     search_request: SearchRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Search documents using semantic search with access control.
+    """Search documents using hybrid search with access control and metadata filtering.
+
+    Search Types:
+    - semantic: Embedding-based semantic search (best for conceptual queries)
+    - keyword: BM25-like keyword search (best for exact term matching)
+    - hybrid: Combines both semantic and keyword (best overall results)
 
     Access Control:
     - Public documents: All users can see
     - Private documents: Only owner can see
     - Domain documents: Only users with matching domains can see
 
+    Metadata Filtering:
+    - Filter by file_type, filename, or any other metadata field
+    - Example: {"file_type": "pdf"} to search only PDFs
+
     Note: No authentication here - user info comes from external Microsoft OAuth
 
     Args:
-        search_request: Search parameters including user_email and user_domains
+        search_request: Search parameters including search_type, metadata_filters, user_email, and user_domains
         db: Database session
 
     Returns:
-        SearchResponse with matching document chunks (filtered by access)
+        SearchResponse with matching document chunks (filtered by access and metadata)
     """
+    # Validate search_type
+    if search_request.search_type not in ["semantic", "keyword", "hybrid"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid search_type: {search_request.search_type}. Must be 'semantic', 'keyword', or 'hybrid'",
+        )
+
     logger.info(
-        f"Search request: '{search_request.query[:50]}...' by user {search_request.user_email} "
-        f"(domains: {search_request.user_domains})"
+        f"Search request: '{search_request.query[:50]}...' (type={search_request.search_type}) "
+        f"by user {search_request.user_email} (domains: {search_request.user_domains}, "
+        f"filters: {search_request.metadata_filters})"
     )
 
-    # Perform vector search with access control
+    # Perform vector search with access control and metadata filtering
     vector_store = VectorStore()
     results = await vector_store.search(
         query=search_request.query,
+        search_type=search_request.search_type,
         limit=search_request.limit,
         score_threshold=search_request.score_threshold,
+        metadata_filters=search_request.metadata_filters,
         user_email=search_request.user_email,
         user_domains=search_request.user_domains or [],
     )
