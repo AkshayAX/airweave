@@ -288,8 +288,8 @@ class DeepSeekOCRConverter(BaseTextConverter):
                 with tempfile.TemporaryDirectory() as tmp_output_dir:
                     try:
                         # Use DeepSeek-OCR's custom infer() method
-                        # Prompt for pure OCR without layout grounding
-                        prompt = "<image>\n<|grounding|>OCR this image."
+                        # Prompt for document-to-markdown conversion with layout preservation
+                        prompt = "<image>\n<|grounding|>Convert the document to markdown."
 
                         # Capture stdout since the model prints results there
                         old_stdout = sys.stdout

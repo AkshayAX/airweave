@@ -91,6 +91,8 @@ SUPPORTED_EXTENSIONS = {
     ".pdf": "pdf",
     ".docx": "docx",
     ".doc": "docx",
+    ".pptx": "pptx",
+    ".ppt": "pptx",
     ".txt": "txt",
     ".md": "txt",
     # Spreadsheets
