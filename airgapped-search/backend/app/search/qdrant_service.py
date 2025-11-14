@@ -14,6 +14,7 @@ from qdrant_client.models import (
     VectorParams,
     SparseVectorParams,
     SparseIndexParams,
+    SparseVector,
     PointStruct,
     Filter,
     FieldCondition,
@@ -25,6 +26,7 @@ from qdrant_client.models import (
     Prefetch,
     Query,
     FusionQuery,
+    Fusion,
 )
 
 from app.core.config import settings
@@ -302,11 +304,18 @@ class QdrantService:
                 raise ValueError("sparse_query_vector required for keyword search")
 
             logger.debug("Performing keyword search with sparse vectors")
+
+            # Convert sparse vector dict to SparseVector model
+            sparse_vector_model = SparseVector(
+                indices=sparse_query_vector["indices"],
+                values=sparse_query_vector["values"]
+            )
+
             search_result = self.client.search(
                 collection_name=collection_name,
                 query_vector=NamedSparseVector(
                     name="sparse",
-                    vector=sparse_query_vector
+                    vector=sparse_vector_model
                 ),
                 limit=limit,
                 score_threshold=score_threshold,
@@ -319,10 +328,17 @@ class QdrantService:
                 raise ValueError("Both query_vector and sparse_query_vector required for hybrid search")
 
             logger.debug("Performing hybrid search with dense + sparse vectors")
+
+            # Convert sparse vector dict to SparseVector model
+            sparse_vector_model = SparseVector(
+                indices=sparse_query_vector["indices"],
+                values=sparse_query_vector["values"]
+            )
+
             # Use query API with Reciprocal Rank Fusion (RRF)
             query_result = self.client.query_points(
                 collection_name=collection_name,
-                query=FusionQuery(fusion="rrf"),  # Reciprocal Rank Fusion
+                query=FusionQuery(fusion=Fusion.RRF),  # Reciprocal Rank Fusion
                 prefetch=[
                     # Prefetch from dense vectors (semantic)
                     Prefetch(
@@ -333,7 +349,7 @@ class QdrantService:
                     ),
                     # Prefetch from sparse vectors (keyword)
                     Prefetch(
-                        query=sparse_query_vector,
+                        query=sparse_vector_model,
                         using="sparse",
                         limit=limit * 2,
                         query_filter=query_filter,
