@@ -248,9 +248,10 @@ class DeepSeekOCRConverter(BaseTextConverter):
 
                 if text:
                     results[path] = text
-                    logger.debug(f"OCR completed: {os.path.basename(path)} ({len(text)} chars)")
+                    logger.info(f"✓ OCR completed: {os.path.basename(path)} ({len(text)} chars)")
+                    logger.info(f"  Text preview: {text[:200]}...")
                 else:
-                    logger.warning(f"No text extracted from: {path}")
+                    logger.warning(f"❌ No text extracted from: {path}")
                     results[path] = None
 
             except Exception as e:
@@ -317,7 +318,8 @@ class DeepSeekOCRConverter(BaseTextConverter):
                         if result and isinstance(result, dict):
                             text = result.get("text", "")
                             if text and text.strip():
-                                logger.info("Extracted text from return value")
+                                logger.info(f"✓ OCR extracted {len(text)} chars from {name}")
+                                logger.debug(f"Extracted text preview: {text[:500]}...")
                                 return text.strip()
 
                         # Method 2: Try reading from saved markdown files
@@ -327,7 +329,8 @@ class DeepSeekOCRConverter(BaseTextConverter):
                                 with open(md_path, 'r', encoding='utf-8') as f:
                                     text = f.read()
                                     if text.strip():
-                                        logger.info(f"Extracted text from saved file: {filename}")
+                                        logger.info(f"✓ OCR extracted {len(text)} chars from {name} (via saved file: {filename})")
+                                        logger.debug(f"Extracted text preview: {text[:500]}...")
                                         return text.strip()
 
                         # Method 3: Extract text from captured stdout
@@ -343,7 +346,8 @@ class DeepSeekOCRConverter(BaseTextConverter):
                                 # Clean up whitespace
                                 extracted_text = ' '.join(extracted_text.split())
                                 if extracted_text.strip():
-                                    logger.info("Extracted text from captured stdout")
+                                    logger.info(f"✓ OCR extracted {len(extracted_text)} chars from {name} (via stdout)")
+                                    logger.debug(f"Extracted text preview: {extracted_text[:500]}...")
                                     return extracted_text.strip()
 
                         logger.warning(f"No text extracted. Result type: {type(result)}, stdout length: {len(stdout_text)}")
