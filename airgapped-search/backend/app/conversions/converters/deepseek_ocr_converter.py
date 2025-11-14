@@ -100,7 +100,7 @@ class DeepSeekOCRConverter(BaseTextConverter):
             )
 
             # Load model with custom infer() method
-            # Use bfloat16 for better stability on CUDA (avoids dtype mismatch), float32 on CPU
+            # Official DeepSeek-OCR loading approach
             if self.device == "cuda":
                 dtype = torch.bfloat16
             else:
@@ -110,10 +110,11 @@ class DeepSeekOCRConverter(BaseTextConverter):
                 "deepseek-ai/DeepSeek-OCR",
                 trust_remote_code=True,
                 torch_dtype=dtype,
+                use_safetensors=True,  # Use safetensors for stable loading
                 cache_dir=cache_dir
             )
 
-            # Move model to device
+            # Move model to device and set to eval mode
             self._model = self._model.to(self.device)
             self._model.eval()  # Set to evaluation mode
 
@@ -289,8 +290,9 @@ class DeepSeekOCRConverter(BaseTextConverter):
                 with tempfile.TemporaryDirectory() as tmp_output_dir:
                     try:
                         # Use DeepSeek-OCR's custom infer() method
-                        # Prompt for document-to-markdown conversion with layout preservation
-                        prompt = "<image>\n<|grounding|>Convert the document to markdown."
+                        # Try simple OCR prompt for better compatibility
+                        # Alternative: "<image>\n<|grounding|>Convert the document to markdown." for layout-preserving
+                        prompt = "<image>\n<|grounding|>OCR this image."
 
                         # Capture stdout since the model prints results there
                         old_stdout = sys.stdout
