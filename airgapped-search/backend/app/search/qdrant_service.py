@@ -155,11 +155,26 @@ class QdrantService:
         # Convert to Qdrant PointStruct format with named vectors
         qdrant_points = []
         for point in points:
+            # Convert sparse vector dict to SparseVector model
+            sparse_indices = point["sparse_vector"]["indices"]
+            sparse_values = point["sparse_vector"]["values"]
+
+            # Handle empty sparse vectors (shouldn't happen but be safe)
+            if not sparse_indices or not sparse_values:
+                logger.warning(f"Point {point['id']} has empty sparse vector, using dummy values")
+                sparse_indices = [0]
+                sparse_values = [0.01]
+
+            sparse_vector_model = SparseVector(
+                indices=sparse_indices,
+                values=sparse_values
+            )
+
             qdrant_point = PointStruct(
                 id=point["id"],
                 vector={
                     "dense": point["dense_vector"],
-                    "sparse": point["sparse_vector"],
+                    "sparse": sparse_vector_model,
                 },
                 payload=point["payload"],
             )
@@ -305,10 +320,18 @@ class QdrantService:
 
             logger.debug("Performing keyword search with sparse vectors")
 
-            # Convert sparse vector dict to SparseVector model
+            # Validate and convert sparse vector dict to SparseVector model
+            sparse_indices = sparse_query_vector.get("indices", [])
+            sparse_values = sparse_query_vector.get("values", [])
+
+            if not sparse_indices or not sparse_values:
+                logger.warning("Empty sparse query vector, using dummy values")
+                sparse_indices = [0]
+                sparse_values = [0.01]
+
             sparse_vector_model = SparseVector(
-                indices=sparse_query_vector["indices"],
-                values=sparse_query_vector["values"]
+                indices=sparse_indices,
+                values=sparse_values
             )
 
             search_result = self.client.search(
@@ -329,10 +352,18 @@ class QdrantService:
 
             logger.debug("Performing hybrid search with dense + sparse vectors")
 
-            # Convert sparse vector dict to SparseVector model
+            # Validate and convert sparse vector dict to SparseVector model
+            sparse_indices = sparse_query_vector.get("indices", [])
+            sparse_values = sparse_query_vector.get("values", [])
+
+            if not sparse_indices or not sparse_values:
+                logger.warning("Empty sparse query vector, using dummy values")
+                sparse_indices = [0]
+                sparse_values = [0.01]
+
             sparse_vector_model = SparseVector(
-                indices=sparse_query_vector["indices"],
-                values=sparse_query_vector["values"]
+                indices=sparse_indices,
+                values=sparse_values
             )
 
             # Use query API with Reciprocal Rank Fusion (RRF)
