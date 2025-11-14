@@ -74,14 +74,22 @@ class QdrantService:
                 collection_info = self.client.get_collection(collection_name)
                 config = collection_info.config
 
-                # Check if it has named vectors with "dense" and "sparse"
-                has_hybrid_schema = (
+                # Check if it has named dense vectors and sparse vectors
+                has_dense = (
                     hasattr(config, 'params') and
                     hasattr(config.params, 'vectors') and
                     isinstance(config.params.vectors, dict) and
-                    "dense" in config.params.vectors and
-                    "sparse" in config.params.vectors
+                    "dense" in config.params.vectors
                 )
+
+                has_sparse = (
+                    hasattr(config, 'params') and
+                    hasattr(config.params, 'sparse_vectors') and
+                    isinstance(config.params.sparse_vectors, dict) and
+                    "sparse" in config.params.sparse_vectors
+                )
+
+                has_hybrid_schema = has_dense and has_sparse
 
                 if not has_hybrid_schema:
                     logger.warning(
@@ -110,6 +118,8 @@ class QdrantService:
                         size=self.embedding_dimension,
                         distance=Distance.COSINE,
                     ),
+                },
+                sparse_vectors_config={
                     # Sparse vectors for keyword search (SPLADE)
                     "sparse": SparseVectorParams(
                         index=SparseIndexParams(),
