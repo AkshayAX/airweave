@@ -345,16 +345,15 @@ class QdrantService:
                         query=query_vector,
                         using="dense",
                         limit=limit * 2,  # Get more results for better fusion
-                        query_filter=query_filter,
                     ),
                     # Prefetch from sparse vectors (keyword)
                     Prefetch(
                         query=sparse_vector_model,
                         using="sparse",
                         limit=limit * 2,
-                        query_filter=query_filter,
                     ),
                 ],
+                query_filter=query_filter,  # Apply filter at query level, not prefetch
                 limit=limit,
                 score_threshold=score_threshold,
             )
