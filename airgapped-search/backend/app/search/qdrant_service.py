@@ -54,6 +54,8 @@ class QdrantService:
         """Ensure the documents collection exists with hybrid search support.
 
         Creates the collection if it doesn't exist with both dense and sparse vectors.
+        If an old collection exists without the hybrid schema, it will be deleted and recreated.
+
         Dense vectors: semantic search (BAAI/bge-small-en-v1.5)
         Sparse vectors: keyword search (SPLADE)
 
@@ -65,6 +67,38 @@ class QdrantService:
         # Check if collection exists
         collections = self.client.get_collections().collections
         exists = any(c.name == collection_name for c in collections)
+
+        if exists:
+            # Check if collection has the correct schema (named vectors: dense + sparse)
+            try:
+                collection_info = self.client.get_collection(collection_name)
+                config = collection_info.config
+
+                # Check if it has named vectors with "dense" and "sparse"
+                has_hybrid_schema = (
+                    hasattr(config, 'params') and
+                    hasattr(config.params, 'vectors') and
+                    isinstance(config.params.vectors, dict) and
+                    "dense" in config.params.vectors and
+                    "sparse" in config.params.vectors
+                )
+
+                if not has_hybrid_schema:
+                    logger.warning(
+                        f"Collection '{collection_name}' exists but has old schema. "
+                        f"Deleting and recreating with hybrid search support..."
+                    )
+                    self.client.delete_collection(collection_name)
+                    exists = False
+                else:
+                    logger.debug(f"Collection already exists with hybrid schema: {collection_name}")
+
+            except Exception as e:
+                logger.error(f"Error checking collection schema: {e}")
+                # If we can't check the schema, delete and recreate to be safe
+                logger.warning(f"Deleting and recreating collection due to schema check error")
+                self.client.delete_collection(collection_name)
+                exists = False
 
         if not exists:
             logger.info(f"Creating hybrid search collection: {collection_name}")
@@ -83,8 +117,6 @@ class QdrantService:
                 },
             )
             logger.info(f"✓ Hybrid search collection created: {collection_name}")
-        else:
-            logger.debug(f"Collection already exists: {collection_name}")
 
         return collection_name
 
