@@ -36,13 +36,15 @@ class VectorStore:
         text: str,
         metadata: Optional[Dict] = None,
     ) -> Dict:
-        """Index a document for hybrid search.
+        """Index a document for enhanced hybrid search.
 
         Process flow:
         1. Chunk the document text
-        2. Generate dense embeddings (semantic) for each chunk
-        3. Generate sparse embeddings (keyword/BM25) for each chunk
-        4. Store both vectors in Qdrant with metadata
+        2. Generate headers for chunks (LLM)
+        3. Generate dense embeddings (semantic) for each chunk
+        4. Generate dense embeddings (semantic) for each header
+        5. Generate sparse embeddings (keyword/BM25) for each chunk
+        6. Store all vectors in Qdrant with metadata
 
         Args:
             document_id: Document UUID
@@ -70,8 +72,44 @@ class VectorStore:
         # Step 2: Extract chunk texts
         chunk_texts = [chunk["text"] for chunk in chunks]
 
-        # Step 3: Generate dense embeddings (semantic)
-        logger.debug("Generating dense embeddings (semantic)...")
+        # Step 2.5: Generate headers for chunks (if LLM enabled)
+        from app.core.config import settings
+
+        headers = []
+        if settings.ENABLE_LLM:
+            try:
+                from app.llm import LLMProviderFactory, LLMService
+                from app.llm.header_generator import HeaderGenerator
+
+                logger.debug("Generating headers using LLM...")
+
+                # Initialize LLM services (lazy initialization)
+                llm_provider = LLMProviderFactory.create(
+                    provider_type=settings.LLM_PROVIDER,
+                    base_url=settings.LLM_BASE_URL,
+                    model_name=settings.LLM_MODEL,
+                    timeout=settings.LLM_TIMEOUT,
+                    temperature=settings.LLM_TEMPERATURE,
+                    max_tokens=settings.LLM_MAX_TOKENS
+                )
+
+                llm_service = LLMService(primary=llm_provider)
+                header_gen = HeaderGenerator(llm_service)
+
+                # Generate headers in batch
+                headers = await header_gen.generate_headers_batch(chunk_texts)
+                logger.info(f"Generated {len(headers)} headers using LLM")
+
+            except Exception as e:
+                logger.warning(f"Header generation failed: {e}, using fallback")
+                headers = [f"Chunk {i+1}" for i in range(len(chunks))]
+        else:
+            # Fallback: Use simple headers
+            logger.debug("LLM disabled, using simple headers")
+            headers = [f"Chunk {i+1}" for i in range(len(chunks))]
+
+        # Step 3: Generate dense embeddings (semantic) for chunk texts
+        logger.debug("Generating dense embeddings for chunks (semantic)...")
         dense_embeddings = await self.embedding_service.embed_documents(
             chunk_texts, batch_size=32
         )
@@ -81,9 +119,22 @@ class VectorStore:
                 f"Dense embedding count mismatch: {len(dense_embeddings)} != {len(chunks)}"
             )
 
-        logger.info(f"Generated {len(dense_embeddings)} dense embeddings")
+        logger.info(f"Generated {len(dense_embeddings)} dense embeddings for chunks")
 
-        # Step 4: Generate sparse embeddings (keyword/BM25)
+        # Step 4: Generate dense embeddings (semantic) for headers
+        logger.debug("Generating dense embeddings for headers (semantic)...")
+        header_dense_embeddings = await self.embedding_service.embed_documents(
+            headers, batch_size=32
+        )
+
+        if len(header_dense_embeddings) != len(chunks):
+            raise Exception(
+                f"Header embedding count mismatch: {len(header_dense_embeddings)} != {len(chunks)}"
+            )
+
+        logger.info(f"Generated {len(header_dense_embeddings)} dense embeddings for headers")
+
+        # Step 5: Generate sparse embeddings (keyword/BM25)
         logger.debug("Generating sparse embeddings (keyword)...")
         sparse_embeddings = await self.sparse_embedding_service.embed_documents(
             chunk_texts, batch_size=32
@@ -96,9 +147,11 @@ class VectorStore:
 
         logger.info(f"Generated {len(sparse_embeddings)} sparse embeddings")
 
-        # Step 5: Prepare points for Qdrant (hybrid format)
+        # Step 6: Prepare points for Qdrant (enhanced hybrid format)
         points = []
-        for i, (chunk, dense_emb, sparse_emb) in enumerate(zip(chunks, dense_embeddings, sparse_embeddings)):
+        for i, (chunk, dense_emb, header_dense_emb, sparse_emb, header) in enumerate(
+            zip(chunks, dense_embeddings, header_dense_embeddings, sparse_embeddings, headers)
+        ):
             # Create unique point ID
             point_id = str(uuid4())
 
@@ -107,6 +160,7 @@ class VectorStore:
                 "document_id": str(document_id),
                 "chunk_index": i,
                 "text": chunk["text"],
+                "header": header,  # Store header for fuzzy search
                 "start_index": chunk["start_index"],
                 "end_index": chunk["end_index"],
                 "token_count": chunk["token_count"],
@@ -116,16 +170,17 @@ class VectorStore:
             if metadata:
                 payload.update(metadata)
 
-            # Create point with both dense and sparse vectors
+            # Create point with dense, header_dense, and sparse vectors
             point = {
                 "id": point_id,
                 "dense_vector": dense_emb,
+                "header_dense_vector": header_dense_emb,
                 "sparse_vector": sparse_emb,
                 "payload": payload,
             }
             points.append(point)
 
-        # Step 6: Upsert to Qdrant
+        # Step 7: Upsert to Qdrant
         logger.debug("Storing vectors in Qdrant...")
         result = await self.qdrant.upsert_vectors(points=points)
 

@@ -53,12 +53,13 @@ class QdrantService:
         logger.info(f"Qdrant client initialized: {settings.QDRANT_HOST}:{settings.QDRANT_PORT}")
 
     async def ensure_collection_exists(self) -> str:
-        """Ensure the documents collection exists with hybrid search support.
+        """Ensure the documents collection exists with enhanced hybrid search support.
 
-        Creates the collection if it doesn't exist with both dense and sparse vectors.
-        If an old collection exists without the hybrid schema, it will be deleted and recreated.
+        Creates the collection if it doesn't exist with dense, sparse, and header vectors.
+        If an old collection exists without the full schema, it will be deleted and recreated.
 
-        Dense vectors: semantic search (BAAI/bge-small-en-v1.5)
+        Dense vectors: semantic search on chunk text (BAAI/bge-small-en-v1.5)
+        Header dense vectors: semantic search on LLM-generated headers (BAAI/bge-small-en-v1.5)
         Sparse vectors: keyword search (SPLADE)
 
         Returns:
@@ -76,12 +77,19 @@ class QdrantService:
                 collection_info = self.client.get_collection(collection_name)
                 config = collection_info.config
 
-                # Check if it has named dense vectors and sparse vectors
+                # Check if it has named dense vectors, header vectors, and sparse vectors
                 has_dense = (
                     hasattr(config, 'params') and
                     hasattr(config.params, 'vectors') and
                     isinstance(config.params.vectors, dict) and
                     "dense" in config.params.vectors
+                )
+
+                has_header_dense = (
+                    hasattr(config, 'params') and
+                    hasattr(config.params, 'vectors') and
+                    isinstance(config.params.vectors, dict) and
+                    "header_dense" in config.params.vectors
                 )
 
                 has_sparse = (
@@ -91,9 +99,9 @@ class QdrantService:
                     "sparse" in config.params.sparse_vectors
                 )
 
-                has_hybrid_schema = has_dense and has_sparse
+                has_full_schema = has_dense and has_header_dense and has_sparse
 
-                if not has_hybrid_schema:
+                if not has_full_schema:
                     logger.warning(
                         f"Collection '{collection_name}' exists but has old schema. "
                         f"Deleting and recreating with hybrid search support..."
@@ -111,12 +119,17 @@ class QdrantService:
                 exists = False
 
         if not exists:
-            logger.info(f"Creating hybrid search collection: {collection_name}")
+            logger.info(f"Creating enhanced hybrid search collection: {collection_name}")
             self.client.create_collection(
                 collection_name=collection_name,
                 vectors_config={
-                    # Dense vectors for semantic search
+                    # Dense vectors for semantic search on chunk text
                     "dense": VectorParams(
+                        size=self.embedding_dimension,
+                        distance=Distance.COSINE,
+                    ),
+                    # Dense vectors for semantic search on headers
+                    "header_dense": VectorParams(
                         size=self.embedding_dimension,
                         distance=Distance.COSINE,
                     ),
@@ -128,7 +141,7 @@ class QdrantService:
                     ),
                 },
             )
-            logger.info(f"✓ Hybrid search collection created: {collection_name}")
+            logger.info(f"✓ Enhanced hybrid search collection created: {collection_name}")
 
         return collection_name
 
@@ -136,12 +149,13 @@ class QdrantService:
         self,
         points: List[Dict],
     ) -> Dict:
-        """Insert or update vectors in the collection with hybrid search support.
+        """Insert or update vectors in the collection with enhanced hybrid search support.
 
         Args:
             points: List of dicts with:
                 - id: Point ID
-                - dense_vector: Dense embedding vector
+                - dense_vector: Dense embedding vector (chunk text)
+                - header_dense_vector: Dense embedding vector (header) - optional
                 - sparse_vector: Sparse embedding dict with 'indices' and 'values'
                 - payload: Metadata payload
 
@@ -170,12 +184,19 @@ class QdrantService:
                 values=sparse_values
             )
 
+            # Build vector dict with all available vectors
+            vectors = {
+                "dense": point["dense_vector"],
+                "sparse": sparse_vector_model,
+            }
+
+            # Add header vector if present
+            if "header_dense_vector" in point and point["header_dense_vector"]:
+                vectors["header_dense"] = point["header_dense_vector"]
+
             qdrant_point = PointStruct(
                 id=point["id"],
-                vector={
-                    "dense": point["dense_vector"],
-                    "sparse": sparse_vector_model,
-                },
+                vector=vectors,
                 payload=point["payload"],
             )
             qdrant_points.append(qdrant_point)

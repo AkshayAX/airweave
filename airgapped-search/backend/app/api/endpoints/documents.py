@@ -550,12 +550,22 @@ async def search_documents(
     search_request: SearchRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Search documents using hybrid search with access control and metadata filtering.
+    """Search documents using enhanced hybrid search with access control and metadata filtering.
 
     Search Types:
     - semantic: Embedding-based semantic search (best for conceptual queries)
     - keyword: BM25-like keyword search (best for exact term matching)
-    - hybrid: Combines both semantic and keyword (best overall results)
+    - hybrid: Combines semantic, keyword, header semantic, and fuzzy matching (best overall results)
+
+    Enhanced Hybrid Search (when enabled):
+    - Spell correction on queries (LLM-based)
+    - 5 parallel search methods:
+      1. Semantic search on chunk text
+      2. Semantic search on headers
+      3. Keyword search (SPLADE)
+      4. Fuzzy matching on headers
+      5. Exact matching on headers
+    - Results combined using Reciprocal Rank Fusion (RRF)
 
     Access Control:
     - Public documents: All users can see
@@ -588,17 +598,53 @@ async def search_documents(
         f"filters: {search_request.metadata_filters})"
     )
 
-    # Perform vector search with access control and metadata filtering
-    vector_store = VectorStore()
-    results = await vector_store.search(
-        query=search_request.query,
-        search_type=search_request.search_type,
-        limit=search_request.limit,
-        score_threshold=search_request.score_threshold,
-        metadata_filters=search_request.metadata_filters,
-        user_email=search_request.user_email,
-        user_domains=search_request.user_domains or [],
-    )
+    # Choose search method based on configuration
+    from app.core.config import settings
+
+    if settings.ENABLE_ENHANCED_HYBRID_SEARCH and search_request.search_type == "hybrid":
+        # Use enhanced hybrid search (5 methods + RRF)
+        from app.search.enhanced_hybrid_search import EnhancedHybridSearch
+
+        logger.info("Using enhanced hybrid search")
+        search_service = EnhancedHybridSearch()
+        enhanced_results = await search_service.search(
+            query=search_request.query,
+            limit=search_request.limit,
+            score_threshold=search_request.score_threshold,
+            metadata_filters=search_request.metadata_filters,
+            user_email=search_request.user_email,
+            user_domains=search_request.user_domains or [],
+            enable_spell_correction=True,
+        )
+
+        # Format enhanced results to match expected format
+        results = []
+        for result in enhanced_results:
+            payload = result.get("payload", {})
+            results.append({
+                "score": result.get("fused_score", 0),
+                "document_id": payload.get("document_id", ""),
+                "chunk_index": payload.get("chunk_index", 0),
+                "text": payload.get("text", ""),
+                "metadata": {
+                    k: v for k, v in payload.items()
+                    if k not in ["text", "document_id", "chunk_index"]
+                }
+            })
+
+    else:
+        # Use traditional vector store search
+        logger.info(f"Using traditional vector store search (type={search_request.search_type})")
+        vector_store = VectorStore()
+        results = await vector_store.search(
+            query=search_request.query,
+            search_type=search_request.search_type,
+            limit=search_request.limit,
+            score_threshold=search_request.score_threshold,
+            metadata_filters=search_request.metadata_filters,
+            user_email=search_request.user_email,
+            user_domains=search_request.user_domains or [],
+        )
 
     logger.info(f"Search returned {len(results)} accessible results")
 
